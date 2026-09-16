@@ -109,6 +109,7 @@ const webhookLimiter = rateLimit({
   limit: 120,
   standardHeaders: "draft-7",
   legacyHeaders: false,
+  validate: { keyGeneratorIpFallback: false },
   message: { error: "Too many webhook requests, please try again later" },
   keyGenerator: (req) => req.ip ?? "unknown",
 });
@@ -120,6 +121,7 @@ const cronLimiter = rateLimit({
   limit: 20,
   standardHeaders: "draft-7",
   legacyHeaders: false,
+  validate: { keyGeneratorIpFallback: false },
   message: { error: "Too many cron requests, please try again later" },
   keyGenerator: (req) => req.ip ?? "unknown",
 });

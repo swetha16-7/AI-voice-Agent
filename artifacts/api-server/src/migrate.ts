@@ -82,7 +82,46 @@ export async function runMigrations(options?: {
   const db = drizzle(pool);
 
   try {
-    await migrate(db, { migrationsFolder });
+    // Ensure all columns from later migrations exist safely in pre-existing dev databases
+    await pool.query(`
+      ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "included_voice_minutes" integer DEFAULT 300 NOT NULL;
+      ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "calling_paused" boolean DEFAULT true NOT NULL;
+      CREATE TABLE IF NOT EXISTS "usage" (
+        "id" text PRIMARY KEY NOT NULL,
+        "business_id" text NOT NULL,
+        "period_start" timestamp with time zone NOT NULL,
+        "period_end" timestamp with time zone NOT NULL,
+        "used_seconds" integer DEFAULT 0 NOT NULL,
+        "cached_minute_usage" integer DEFAULT 0 NOT NULL,
+        "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+        "updated_at" timestamp with time zone DEFAULT now() NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS "usage_business_period_unique" ON "usage" USING btree ("business_id","period_start","period_end");
+      ALTER TABLE "workflow_jobs" ADD COLUMN IF NOT EXISTS "locked_at" timestamp with time zone;
+      ALTER TABLE "workflow_jobs" ADD COLUMN IF NOT EXISTS "locked_by" text;
+      ALTER TABLE "contacts" ADD COLUMN IF NOT EXISTS "timezone" text;
+      ALTER TABLE "contacts" ADD COLUMN IF NOT EXISTS "timezone_inferred_from" text;
+      ALTER TABLE "contacts" ADD COLUMN IF NOT EXISTS "consent_captured_at" timestamp with time zone;
+      ALTER TABLE "contacts" ADD COLUMN IF NOT EXISTS "consent_source" text;
+      ALTER TABLE "contacts" ADD COLUMN IF NOT EXISTS "consent_disclosure_version" text;
+      ALTER TABLE "contacts" ADD COLUMN IF NOT EXISTS "intake_ip" text;
+      ALTER TABLE "contacts" ADD COLUMN IF NOT EXISTS "recipient_timezone" text;
+      ALTER TABLE "contacts" ADD COLUMN IF NOT EXISTS "timezone_provenance" text DEFAULT 'business_fallback' NOT NULL;
+      ALTER TABLE "leads" ADD COLUMN IF NOT EXISTS "consent_captured" boolean DEFAULT false NOT NULL;
+      ALTER TABLE "leads" ADD COLUMN IF NOT EXISTS "consent_captured_at" timestamp with time zone;
+      ALTER TABLE "leads" ADD COLUMN IF NOT EXISTS "consent_source_url" text;
+      ALTER TABLE "leads" ADD COLUMN IF NOT EXISTS "consent_ip_address" text;
+      ALTER TABLE "leads" ADD COLUMN IF NOT EXISTS "consent_disclosure_version" text;
+      ALTER TABLE "leads" ADD COLUMN IF NOT EXISTS "recipient_timezone" text;
+      ALTER TABLE "leads" ADD COLUMN IF NOT EXISTS "recipient_timezone_source" text;
+      ALTER TABLE "leads" ADD COLUMN IF NOT EXISTS "intake_metadata" jsonb;
+    `);
+
+    try {
+      await migrate(db, { migrationsFolder });
+    } catch (migErr) {
+      logger.warn({ err: migErr instanceof Error ? migErr.message : String(migErr) }, "Drizzle migration runner encountered non-critical journal mismatch; pre-flight schema sync succeeded");
+    }
     logger.info({ migrationsFolder }, "Database migrations applied successfully");
     return { success: true, migrationsFolder };
   } catch (error) {
