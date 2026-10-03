@@ -82,7 +82,21 @@ export async function runMigrations(options?: {
   const db = drizzle(pool);
 
   try {
-    // Ensure all columns from later migrations exist safely in pre-existing dev databases
+    // Step 1: Run Drizzle migrations first — this creates the base tables on a
+    // fresh database (0000_first_demogoblin.sql) and applies all subsequent
+    // migration files in order.  On an existing database where some migrations
+    // have already been applied, Drizzle's journal tracking skips them.
+    try {
+      await migrate(db, { migrationsFolder });
+    } catch (migErr) {
+      logger.warn({ err: migErr instanceof Error ? migErr.message : String(migErr) }, "Drizzle migration runner encountered non-critical journal mismatch; continuing with post-flight schema sync");
+    }
+
+    // Step 2: Idempotent "post-flight" schema sync — ensures columns added in
+    // later migrations exist even in pre-existing dev databases whose Drizzle
+    // journal may be out of sync (e.g. schema was modified manually).  Every
+    // statement uses IF NOT EXISTS / ADD COLUMN IF NOT EXISTS, so running them
+    // after Drizzle migrations is safe and a no-op when the schema is current.
     await pool.query(`
       ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "included_voice_minutes" integer DEFAULT 300 NOT NULL;
       ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "calling_paused" boolean DEFAULT true NOT NULL;
@@ -117,11 +131,6 @@ export async function runMigrations(options?: {
       ALTER TABLE "leads" ADD COLUMN IF NOT EXISTS "intake_metadata" jsonb;
     `);
 
-    try {
-      await migrate(db, { migrationsFolder });
-    } catch (migErr) {
-      logger.warn({ err: migErr instanceof Error ? migErr.message : String(migErr) }, "Drizzle migration runner encountered non-critical journal mismatch; pre-flight schema sync succeeded");
-    }
     logger.info({ migrationsFolder }, "Database migrations applied successfully");
     return { success: true, migrationsFolder };
   } catch (error) {
