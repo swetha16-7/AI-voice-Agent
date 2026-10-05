@@ -132,15 +132,15 @@ export async function ensureSeedData(): Promise<void> {
   }
 }
 
-async function getBusiness(businessId = BUSINESS_ID) {
+async function getBusiness(businessId: string) {
   const [business] = await db.select().from(businessesTable).where(eq(businessesTable.id, businessId));
   return business;
 }
 
-async function getLeadDto(leadId: string, businessId = BUSINESS_ID) {
+async function getLeadDto(leadId: string, businessId: string) {
   const [row] = await db.select({ lead: leadsTable, contact: contactsTable }).from(leadsTable).innerJoin(contactsTable, eq(leadsTable.contactId, contactsTable.id)).where(and(eq(leadsTable.id, leadId), eq(leadsTable.businessId, businessId)));
   if (!row) return undefined;
-  const [lastCall] = await db.select({ endedAt: callsTable.endedAt, startedAt: callsTable.startedAt }).from(callsTable).where(eq(callsTable.leadId, leadId)).orderBy(desc(callsTable.createdAt)).limit(1);
+  const [lastCall] = await db.select({ endedAt: callsTable.endedAt, startedAt: callsTable.startedAt }).from(callsTable).where(and(eq(callsTable.leadId, leadId), eq(callsTable.businessId, businessId))).orderBy(desc(callsTable.createdAt)).limit(1);
   return {
     id: row.lead.id, name: row.contact.name, phone: row.contact.phone, email: row.contact.email,
     preferred_language: row.contact.preferredLanguage, source: row.lead.source, campaign: row.lead.campaign,
@@ -157,7 +157,7 @@ async function getLeadDto(leadId: string, businessId = BUSINESS_ID) {
   };
 }
 
-async function getAppointmentDto(row: typeof appointmentsTable.$inferSelect, businessId = BUSINESS_ID) {
+async function getAppointmentDto(row: typeof appointmentsTable.$inferSelect, businessId: string) {
   const [lead] = await db.select({ lead: leadsTable, contact: contactsTable }).from(leadsTable).innerJoin(contactsTable, eq(leadsTable.contactId, contactsTable.id)).where(and(eq(leadsTable.id, row.leadId), eq(leadsTable.businessId, businessId)));
   return {
     id: row.id, lead_id: row.leadId, lead_name: lead?.contact.name ?? "Unknown lead",
@@ -166,8 +166,8 @@ async function getAppointmentDto(row: typeof appointmentsTable.$inferSelect, bus
   };
 }
 
-async function getCallDto(row: typeof callsTable.$inferSelect) {
-  const [contact] = await db.select().from(contactsTable).where(eq(contactsTable.id, row.contactId));
+async function getCallDto(row: typeof callsTable.$inferSelect, businessId: string) {
+  const [contact] = await db.select().from(contactsTable).where(and(eq(contactsTable.id, row.contactId), eq(contactsTable.businessId, businessId)));
   return {
     id: row.id, lead_id: row.leadId, lead_name: contact?.name ?? "Unknown lead", phone: contact?.phone ?? "",
     provider: row.provider, status: row.status, started_at: iso(row.startedAt), ended_at: iso(row.endedAt),
@@ -233,10 +233,13 @@ export function sendValidatedResponse<T>(
 }
 
 router.get("/auth/me", async (_req, res): Promise<void> => {
-  await ensureSeedData();
   const req = _req;
+  if (!req.leadSprintUserId) {
+    res.status(401).json({ error: "Authentication required" });
+    return;
+  }
   const businessId = scopedBusinessId(req);
-  const [user] = await db.select().from(usersTable).where(eq(usersTable.id, req.leadSprintUserId ?? USER_ID));
+  const [user] = await db.select().from(usersTable).where(eq(usersTable.id, req.leadSprintUserId));
   const business = await getBusiness(businessId);
   if (!user || !business) { res.status(503).json({ error: "Operator setup is not ready" }); return; }
   sendValidatedResponse(res, GetAuthMeResponse, {
@@ -476,7 +479,7 @@ router.get("/calls", async (req, res): Promise<void> => {
   const query = GetCallsQueryParams.safeParse(req.query);
   if (!query.success) { res.status(400).json({ error: query.error.message }); return; }
   const rows = await db.select().from(callsTable).where(and(eq(callsTable.businessId, BUSINESS_ID), query.data.status ? eq(callsTable.status, query.data.status) : undefined)).orderBy(desc(callsTable.createdAt));
-  sendValidatedResponse(res, GetCallsResponse, await Promise.all(rows.map(getCallDto)));
+  sendValidatedResponse(res, GetCallsResponse, await Promise.all(rows.map((row) => getCallDto(row, BUSINESS_ID))));
 });
 
 router.get("/calls/:id", async (req, res): Promise<void> => {
@@ -485,7 +488,7 @@ router.get("/calls/:id", async (req, res): Promise<void> => {
   if (!params.success) { res.status(400).json({ error: params.error.message }); return; }
   const [row] = await db.select().from(callsTable).where(and(eq(callsTable.id, params.data.id), eq(callsTable.businessId, BUSINESS_ID)));
   if (!row) { res.status(404).json({ error: "Call not found" }); return; }
-  sendValidatedResponse(res, GetCallResponse, await getCallDto(row));
+  sendValidatedResponse(res, GetCallResponse, await getCallDto(row, BUSINESS_ID));
 });
 
 router.post("/calls/start", async (req, res): Promise<void> => {
@@ -495,7 +498,7 @@ router.post("/calls/start", async (req, res): Promise<void> => {
   const lead = await getLeadDto(body.data.lead_id, BUSINESS_ID);
   if (!lead) { res.status(404).json({ error: "Lead not found" }); return; }
   const [existing] = await db.select().from(callsTable).where(and(eq(callsTable.leadId, body.data.lead_id), eq(callsTable.businessId, BUSINESS_ID), eq(callsTable.status, "in_progress"))).limit(1);
-  if (existing) { sendValidatedResponse(res, StartCallResponse, await getCallDto(existing)); return; }
+  if (existing) { sendValidatedResponse(res, StartCallResponse, await getCallDto(existing, BUSINESS_ID)); return; }
 
   const business = await getBusiness(BUSINESS_ID);
   const [leadRow] = await db.select({ contactId: leadsTable.contactId }).from(leadsTable).where(and(eq(leadsTable.id, body.data.lead_id), eq(leadsTable.businessId, BUSINESS_ID)));
@@ -529,7 +532,7 @@ router.post("/calls/start", async (req, res): Promise<void> => {
       outcome: `Blocked — ${decision.reason}`, summary: decision.message ?? "Blocked by call policy.", errorState: decision.reason,
     }).returning();
     await db.insert(activitiesTable).values({ id: id("activity"), businessId: BUSINESS_ID, type: "policy", title: `Call blocked for ${lead.name}`, detail: decision.message ?? "Blocked by call policy." });
-    sendValidatedResponse(res, StartCallResponse, await getCallDto(blocked), 409);
+    sendValidatedResponse(res, StartCallResponse, await getCallDto(blocked, BUSINESS_ID), 409);
     return;
   }
 
@@ -562,7 +565,7 @@ router.post("/calls/start", async (req, res): Promise<void> => {
     await db.insert(workflowJobsTable).values({ id: id("job"), businessId: BUSINESS_ID, type: "initiate_call", idempotencyKey: callId });
   }
   await db.insert(activitiesTable).values({ id: id("activity"), businessId: BUSINESS_ID, type: "call", title: `Call ${liveRetell ? "started" : "queued"} for ${lead.name}`, detail: liveRetell ? "Retell accepted the call · awaiting signed callback" : "Demo mode · Retell credentials are not configured", });
-  sendValidatedResponse(res, StartCallResponse, await getCallDto(current), 201);
+  sendValidatedResponse(res, StartCallResponse, await getCallDto(current, BUSINESS_ID), 201);
 });
 
 router.get("/appointments", async (_req, res): Promise<void> => {
