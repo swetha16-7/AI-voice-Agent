@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
-import { ClerkProvider, SignIn, SignUp, useAuth, useClerk } from '@clerk/react';
+import { ClerkProvider, SignIn, SignUp, useAuth, useClerk, useUser } from '@clerk/react';
 import { publishableKeyFromHost } from '@clerk/react/internal';
 import { shadcn } from '@clerk/themes';
 import {
@@ -205,6 +205,40 @@ function useDemoSignOutAction() {
 
 const useSignOutAction = DEMO_AUTH ? useDemoSignOutAction : useClerkSignOutAction;
 
+function useClerkProfileUser() {
+  const { user } = useUser();
+  return user;
+}
+
+function useDemoProfileUser() {
+  return null;
+}
+
+const useProfileUser = DEMO_AUTH ? useDemoProfileUser : useClerkProfileUser;
+
+function profileInitial(name?: string | null, email?: string | null) {
+  const isInternalId = (val?: string | null) =>
+    !val || /^user_[a-zA-Z0-9]+$/.test(val.trim());
+
+  const cleanName = name?.trim();
+  if (cleanName && !isInternalId(cleanName) && cleanName.toLowerCase() !== 'operator') {
+    if (cleanName.includes('@')) {
+      return cleanName[0].toUpperCase();
+    }
+    const parts = cleanName.split(/\s+/).filter(Boolean);
+    if (parts.length > 0) {
+      return parts.map((part) => part[0]).join('').slice(0, 2).toUpperCase();
+    }
+  }
+
+  const cleanEmail = email?.trim();
+  if (cleanEmail && !isInternalId(cleanEmail) && !cleanEmail.startsWith('user_')) {
+    return cleanEmail[0].toUpperCase();
+  }
+
+  return 'LS';
+}
+
 function DemoAuthBanner() {
   return null;
 }
@@ -214,10 +248,34 @@ function Shell({ children, session }: { children: ReactNode; session: any }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const health = useHealthCheck();
   const signOutAction = useSignOutAction();
+  const clerkUser = useProfileUser();
   const meta = pageMeta[location] ?? pageMeta['/workspace'];
   const business = session?.business;
   const user = session?.user;
   const handleSignOut = () => signOutAction(basePath || '/').then(() => setLocation('/'));
+
+  const isInternalId = (val?: string | null) =>
+    !val || /^user_[a-zA-Z0-9]+$/.test(val.trim());
+
+  const clerkName =
+    clerkUser?.fullName?.trim() ||
+    [clerkUser?.firstName, clerkUser?.lastName].filter(Boolean).join(' ').trim() ||
+    clerkUser?.username?.trim();
+
+  const clerkEmail =
+    clerkUser?.primaryEmailAddress?.emailAddress?.trim() ||
+    clerkUser?.emailAddresses?.[0]?.emailAddress?.trim();
+
+  const sessionName = !isInternalId(user?.name) ? user?.name?.trim() : undefined;
+  const sessionEmail =
+    user?.email &&
+    !user.email.endsWith('@clerk.local') &&
+    !user.email.startsWith('user_')
+      ? user.email.trim()
+      : undefined;
+
+  const displayName = clerkName || sessionName || clerkEmail || sessionEmail || 'Operator';
+  const displayInitial = profileInitial(clerkName || sessionName, clerkEmail || sessionEmail);
 
   return <div className="min-h-[100dvh] bg-background text-foreground">
     <aside className={`fixed inset-y-0 left-0 z-30 flex w-[248px] flex-col bg-[hsl(var(--sidebar))] px-4 py-5 text-[hsl(var(--sidebar-foreground))] transition-transform duration-300 md:translate-x-0 ${mobileOpen ? 'translate-x-0' : '-translate-x-full'}`}>
@@ -244,8 +302,8 @@ function Shell({ children, session }: { children: ReactNode; session: any }) {
           <p className="mt-2 text-[11px] leading-5 text-[hsl(var(--sidebar-foreground)/.5)]">Policy checks stay visible before any call is placed.</p>
         </div>
         <div className="flex items-center gap-3 border-t border-[hsl(var(--sidebar-border))] px-2 pt-4">
-          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-[hsl(var(--sidebar-primary)/.18)] font-mono text-[11px] text-[hsl(var(--sidebar-primary))]">{initials(user?.name)}</div>
-          <div className="min-w-0 flex-1"><p className="truncate text-xs font-semibold">{user?.name || 'Operator'}</p><p className="truncate text-[11px] text-[hsl(var(--sidebar-foreground)/.5)]">{business?.name || 'Workspace'}</p></div>
+          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-[hsl(var(--sidebar-primary)/.18)] font-mono text-[11px] text-[hsl(var(--sidebar-primary))]">{displayInitial}</div>
+          <div className="min-w-0 flex-1"><p className="truncate text-xs font-semibold">{displayName}</p><p className="truncate text-[11px] text-[hsl(var(--sidebar-foreground)/.5)]">{business?.name || 'Workspace'}</p></div>
            <button className="text-[hsl(var(--sidebar-foreground)/.55)] hover:text-[hsl(var(--sidebar-primary))]" onClick={handleSignOut} data-testid="button-logout" title="Sign out"><LogOut size={15} /></button>
         </div>
       </div>
