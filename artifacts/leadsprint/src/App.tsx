@@ -65,6 +65,7 @@ import {
   useSuppressLead,
   useUpdateBusinessSettings,
   useUpdateLead,
+  setAuthTokenGetter,
 } from '@workspace/api-client-react';
 import { Link, Redirect, Route, Router as WouterRouter, Switch, useLocation, useRoute } from 'wouter';
 import { ErrorBoundary } from '@/components/error-boundary';
@@ -797,9 +798,54 @@ function Router() {
   return <Switch><Route path="/sign-in/*?" component={SignInPage} /><Route path="/sign-up/*?" component={SignUpPage} /><Route path="/" component={HomeRoute} /><Route component={WorkspaceRoute} /></Switch>;
 }
 
+function ClerkAuthTokenBridge() {
+  const { getToken } = useAuth();
+
+  useEffect(() => {
+    setAuthTokenGetter(getToken);
+
+    return () => {
+      setAuthTokenGetter(null);
+    };
+  }, [getToken]);
+
+  return null;
+}
+
 function ClerkApp() {
   const [, setLocation] = useLocation();
-  return <ClerkProvider publishableKey={clerkPubKey} proxyUrl={clerkProxyUrl} appearance={clerkAppearance} signInUrl={`${basePath}/sign-in`} signUpUrl={`${basePath}/sign-up`} localization={{ signIn: { start: { title: "Welcome back", subtitle: "Sign in to access your workspace" } }, signUp: { start: { title: "Create your workspace", subtitle: "Start your LeadSprint operation" } } }} routerPush={(to) => setLocation(stripBase(to))} routerReplace={(to) => setLocation(stripBase(to), { replace: true })}><QueryClientProvider client={queryClient}><ClerkQueryClientCacheInvalidator /><Router /></QueryClientProvider></ClerkProvider>;
+
+  return (
+    <ClerkProvider
+      publishableKey={clerkPubKey}
+      proxyUrl={clerkProxyUrl}
+      appearance={clerkAppearance}
+      signInUrl={`${basePath}/sign-in`}
+      signUpUrl={`${basePath}/sign-up`}
+      localization={{
+        signIn: {
+          start: {
+            title: "Welcome back",
+            subtitle: "Sign in to access your workspace",
+          },
+        },
+        signUp: {
+          start: {
+            title: "Create your workspace",
+            subtitle: "Start your LeadSprint operation",
+          },
+        },
+      }}
+      routerPush={(to) => setLocation(stripBase(to))}
+      routerReplace={(to) => setLocation(stripBase(to), { replace: true })}
+    >
+      <ClerkAuthTokenBridge />
+      <QueryClientProvider client={queryClient}>
+        <ClerkQueryClientCacheInvalidator />
+        <Router />
+      </QueryClientProvider>
+    </ClerkProvider>
+  );
 }
 
 function DemoApp() {
