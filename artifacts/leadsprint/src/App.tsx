@@ -71,6 +71,12 @@ import { Link, Redirect, Route, Router as WouterRouter, Switch, useLocation, use
 import { ErrorBoundary } from '@/components/error-boundary';
 import NotFound from '@/pages/not-found';
 import { OnboardingPage } from '@/pages/onboarding';
+import {
+  formatDuration,
+  getCallPollingInterval,
+  calculateElapsedSeconds,
+  getCallStatusLabel,
+} from '@/lib/call-helpers';
 
 const queryClient = new QueryClient();
 
@@ -508,15 +514,430 @@ function LeadsPage() {
   </div>;
 }
 
+function LiveCallDuration({
+  startedAt,
+  status,
+  durationSeconds,
+  className = '',
+}: {
+  startedAt?: string | null;
+  status?: string | null;
+  durationSeconds?: number | null;
+  className?: string;
+}) {
+  const [elapsed, setElapsed] = useState<number | null>(() => {
+    if (status === 'in_progress' && startedAt) {
+      return calculateElapsedSeconds(startedAt);
+    }
+    return durationSeconds ?? null;
+  });
+
+  useEffect(() => {
+    if (status !== 'in_progress' || !startedAt) {
+      setElapsed(durationSeconds ?? null);
+      return;
+    }
+
+    const tick = () => {
+      setElapsed(calculateElapsedSeconds(startedAt));
+    };
+
+    tick();
+    const interval = setInterval(tick, 1000);
+    return () => clearInterval(interval);
+  }, [startedAt, status, durationSeconds]);
+
+  return <span className={className}>{formatDuration(elapsed)}</span>;
+}
+
+function CallStatusBadge({ status }: { status?: string | null }) {
+  if (status === 'in_progress') {
+    return (
+      <span
+        className="inline-flex items-center gap-1.5 rounded-md bg-emerald-500/15 px-2 py-1 text-[11px] font-bold uppercase tracking-[.08em] text-emerald-700 dark:text-emerald-400 border border-emerald-500/25"
+        data-testid="badge-status-live"
+      >
+        <span className="relative flex h-2 w-2">
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+          <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+        </span>
+        LIVE
+      </span>
+    );
+  }
+  if (status === 'queued') {
+    return (
+      <span
+        className="inline-flex items-center gap-1.5 rounded-md bg-amber-500/15 px-2 py-1 text-[11px] font-bold uppercase tracking-[.08em] text-amber-800 dark:text-amber-400 border border-amber-500/25"
+        data-testid="badge-status-connecting"
+      >
+        <span className="relative flex h-2 w-2">
+          <span className="relative inline-flex h-2 w-2 animate-pulse rounded-full bg-amber-500" />
+        </span>
+        CONNECTING
+      </span>
+    );
+  }
+  if (status === 'completed') {
+    return (
+      <Badge className="bg-[#d7e9df] text-[#24634f]" data-testid="badge-status-completed">
+        COMPLETED
+      </Badge>
+    );
+  }
+  if (status === 'failed') {
+    return (
+      <Badge className="bg-[#f7d6c7] text-[#8d371f]" data-testid="badge-status-failed">
+        FAILED
+      </Badge>
+    );
+  }
+  if (status === 'uncertain') {
+    return (
+      <Badge className="bg-[#f5e6b6] text-[#745817]" data-testid="badge-status-uncertain">
+        UNCERTAIN
+      </Badge>
+    );
+  }
+  if (status === 'policy_blocked') {
+    return (
+      <Badge className="bg-[#f7d6c7] text-[#8d371f]" data-testid="badge-status-policy-blocked">
+        POLICY BLOCKED
+      </Badge>
+    );
+  }
+  return <Badge className={statusTone(status ?? undefined)}>{getCallStatusLabel(status)}</Badge>;
+}
+
 function CallsPage() {
   const [status, setStatus] = useState('all');
   const [selected, setSelected] = useState<string | null>(null);
-  const calls = useGetCalls(status === 'all' ? undefined : { status: status as any });
-  const call = useGetCall(selected || '', { query: { enabled: !!selected, queryKey: getGetCallQueryKey(selected || '') } });
+
+  // Dynamic Polling: 2500ms when any active/queued call exists, 10000ms idle.
+  // refetchIntervalInBackground: true ensures polling continues even when the browser
+  // tab temporarily loses focus — user does not need to switch tabs or manually refresh.
+  const calls = useGetCalls(
+    status === 'all' ? undefined : { status: status as any },
+    {
+      query: {
+        queryKey: getGetCallsQueryKey(status === 'all' ? undefined : { status: status as any }),
+        refetchInterval: (query) => getCallPollingInterval(query.state.data as any),
+        refetchIntervalInBackground: true,
+      },
+    },
+  );
+
+  const call = useGetCall(selected || '', {
+    query: {
+      enabled: !!selected,
+      queryKey: getGetCallQueryKey(selected || ''),
+      refetchInterval: (query) => {
+        const data = query.state.data as any;
+        return data?.status === 'in_progress' || data?.status === 'queued' ? 2500 : 10000;
+      },
+      refetchIntervalInBackground: true,
+    },
+  });
+
   const startCall = useStartCall();
+
+  const activeCalls = useMemo(() => {
+    return (calls.data || []).filter(
+      (item) => item.status === 'in_progress' || item.status === 'queued',
+    );
+  }, [calls.data]);
+
   if (calls.isLoading) return <div className="space-y-3">{[1, 2, 3, 4, 5].map((n) => <Skeleton key={n} className="h-24" />)}</div>;
   if (calls.isError) return <ErrorState retry={() => calls.refetch()} />;
-  return <div className="animate-rise-in space-y-5"><div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-end"><div><p className="text-sm text-muted-foreground">Provider events, operator decisions, and the human-readable result.</p></div><select value={status} onChange={(event) => setStatus(event.target.value)} className="w-fit rounded-lg border border-input bg-[hsl(var(--card))] px-3 py-2 text-sm" data-testid="select-call-status"><option value="all">All call states</option><option value="completed">Completed</option><option value="in_progress">In progress</option><option value="failed">Failed</option><option value="uncertain">Uncertain</option><option value="policy_blocked">Policy blocked</option></select></div>{!calls.data?.length ? <EmptyState icon={Headphones} title="No calls in this window" description="When a lead is called, provider state and outcome will be kept here." /> : <div className="overflow-hidden rounded-xl border border-border bg-[hsl(var(--card))]"><div className="hidden grid-cols-[1.25fr_1fr_1fr_1fr_1.4fr_40px] gap-4 border-b border-border bg-[hsl(var(--muted)/.55)] px-5 py-3 text-[10px] font-bold uppercase tracking-[.14em] text-muted-foreground md:grid"><span>Lead</span><span>Provider</span><span>State</span><span>Duration</span><span>Outcome</span><span /></div><div className="divide-y divide-border">{calls.data.map((item) => <div key={item.id} className="grid gap-3 px-4 py-4 md:grid-cols-[1.25fr_1fr_1fr_1fr_1.4fr_40px] md:items-center md:gap-4 md:px-5" data-testid={`row-call-${item.id}`}><div><button onClick={() => setSelected(item.id)} className="text-left text-sm font-bold hover:text-[hsl(var(--accent))]" data-testid={`button-open-call-${item.id}`}>{item.lead_name}</button><p className="mt-0.5 text-xs text-muted-foreground">{item.phone} · {formatDate(item.started_at)}</p></div><div className="text-sm"><span className="font-medium">{item.provider}</span>{item.transferred && <span className="ml-2 text-[11px] text-[hsl(var(--accent))]">Transferred</span>}</div><div><Badge className={statusTone(item.status)}>{item.status.replaceAll('_', ' ')}</Badge></div><div className="font-mono text-xs text-muted-foreground">{item.duration_seconds ? `${Math.floor(item.duration_seconds / 60)}m ${item.duration_seconds % 60}s` : '—'}</div><div><p className="line-clamp-2 text-sm">{item.outcome || item.summary || 'No outcome recorded'}</p>{item.error_state && <p className="mt-1 text-xs text-[hsl(var(--destructive))]">{item.error_state}</p>}</div><button className="rounded-lg p-2 text-muted-foreground hover:bg-[hsl(var(--muted))]" onClick={() => setSelected(item.id)} data-testid={`button-call-menu-${item.id}`}><MoreHorizontal size={16} /></button></div>)}</div></div>}{selected && <div className="fixed inset-0 z-40 flex justify-end bg-[#102632]/30" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelected(null); }}><div className="h-full w-full max-w-[510px] overflow-y-auto bg-[hsl(var(--card))] p-6"><div className="flex justify-between"><div><p className="text-[10px] font-bold uppercase tracking-[.18em] text-[hsl(var(--accent))]">Call detail</p><h2 className="mt-1 text-2xl font-bold">{call.data?.lead_name || 'Call'}</h2></div><button onClick={() => setSelected(null)} data-testid="button-close-call"><X size={18} /></button></div>{call.isLoading ? <div className="mt-8 space-y-3"><Skeleton className="h-24" /><Skeleton className="h-40" /></div> : call.data && <><div className="mt-6 grid grid-cols-2 gap-3"><Info label="State" value={call.data.status.replaceAll('_', ' ')} /><Info label="Provider" value={call.data.provider} /><Info label="Started" value={formatTime(call.data.started_at)} /><Info label="Duration" value={call.data.duration_seconds ? `${call.data.duration_seconds}s` : '—'} /></div><div className="mt-6 rounded-xl bg-[hsl(var(--muted)/.55)] p-4"><p className="text-[10px] font-bold uppercase tracking-[.15em] text-muted-foreground">Summary</p><p className="mt-2 text-sm leading-6">{call.data.summary || 'No summary recorded.'}</p></div><div className="mt-4 flex gap-2"><Badge className={call.data.booked ? statusTone('confirmed') : statusTone('created')}>{call.data.booked ? 'Appointment booked' : 'No booking'}</Badge>{call.data.transferred && <Badge className={statusTone('qualified')}>Transferred</Badge>}</div></>}{call.data?.error_state && <div className="mt-5 rounded-lg border border-[hsl(var(--destructive)/.25)] p-4 text-sm text-[hsl(var(--destructive))]"><AlertTriangle size={15} className="mr-2 inline" />{call.data.error_state}</div>}<Button variant="primary" className="mt-7" onClick={() => { if (call.data) startCall.mutate({ data: { lead_id: call.data.lead_id } }); }} disabled={!call.data || startCall.isPending} data-testid="button-retry-call"><PhoneCall size={15} />Retry call</Button></div></div>}</div>;
+
+  return (
+    <div className="animate-rise-in space-y-6">
+      <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-end">
+        <div>
+          <p className="text-sm text-muted-foreground">Provider events, operator decisions, and the human-readable result.</p>
+        </div>
+        <select
+          value={status}
+          onChange={(event) => setStatus(event.target.value)}
+          className="w-fit rounded-lg border border-input bg-[hsl(var(--card))] px-3 py-2 text-sm"
+          data-testid="select-call-status"
+        >
+          <option value="all">All call states</option>
+          <option value="completed">Completed</option>
+          <option value="in_progress">In progress (Live)</option>
+          <option value="queued">Connecting (Queued)</option>
+          <option value="failed">Failed</option>
+          <option value="uncertain">Uncertain</option>
+          <option value="policy_blocked">Policy blocked</option>
+        </select>
+      </div>
+
+      {/* Dedicated LIVE CALLS section — only shown when active/queued calls exist */}
+      {activeCalls.length > 0 && (
+        <section
+          className="rounded-2xl border-2 border-emerald-500/30 bg-emerald-500/[0.04] p-5 shadow-sm space-y-4"
+          data-testid="section-live-calls"
+        >
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="relative flex h-2.5 w-2.5">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-500" />
+              </span>
+              <h2 className="text-xs font-bold uppercase tracking-[.18em] text-emerald-800 dark:text-emerald-300">
+                Live Calls ({activeCalls.length})
+              </h2>
+            </div>
+            <span className="font-mono text-xs text-muted-foreground">
+              Auto-sync active (2.5s)
+            </span>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            {activeCalls.map((item) => (
+              <div
+                key={item.id}
+                className={`rounded-xl border p-4 bg-[hsl(var(--card))] shadow-sm transition hover:shadow-md cursor-pointer ${
+                  item.status === 'in_progress'
+                    ? 'border-emerald-500/40 hover:border-emerald-500/70'
+                    : 'border-amber-500/40 hover:border-amber-500/70'
+                }`}
+                onClick={() => setSelected(item.id)}
+                data-testid={`card-live-call-${item.id}`}
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <h3 className="font-bold text-base truncate hover:text-[hsl(var(--accent))]">
+                      {item.lead_name}
+                    </h3>
+                    <p className="text-xs text-muted-foreground mt-0.5">{item.phone}</p>
+                  </div>
+                  <CallStatusBadge status={item.status} />
+                </div>
+
+                <div className="mt-4 grid grid-cols-2 gap-2 border-t border-border pt-3 text-xs">
+                  <div>
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Provider</p>
+                    <p className="font-medium mt-0.5">{item.provider}</p>
+                  </div>
+                  {item.status === 'in_progress' ? (
+                    <div>
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Live Duration</p>
+                      <p className="font-mono font-bold text-emerald-600 dark:text-emerald-400 mt-0.5" data-testid={`live-duration-${item.id}`}>
+                        <LiveCallDuration startedAt={item.started_at} status={item.status} durationSeconds={item.duration_seconds} />
+                      </p>
+                    </div>
+                  ) : (
+                    <div>
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Status</p>
+                      <p className="font-medium text-amber-700 dark:text-amber-400 mt-0.5">Waiting for Retell...</p>
+                    </div>
+                  )}
+                </div>
+
+                <div className="mt-3 flex items-center justify-between text-[11px] text-muted-foreground">
+                  <span>{item.started_at ? `Started ${formatTime(item.started_at)}` : 'Initiating...'}</span>
+                  <span className="text-[hsl(var(--accent))] font-medium">Open details →</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* Existing Calls History Table */}
+      {!calls.data?.length ? (
+        <EmptyState
+          icon={Headphones}
+          title="No calls in this window"
+          description="When a lead is called, provider state and outcome will be kept here."
+        />
+      ) : (
+        <div className="overflow-hidden rounded-xl border border-border bg-[hsl(var(--card))]">
+          <div className="hidden grid-cols-[1.25fr_1fr_1fr_1fr_1.4fr_40px] gap-4 border-b border-border bg-[hsl(var(--muted)/.55)] px-5 py-3 text-[10px] font-bold uppercase tracking-[.14em] text-muted-foreground md:grid">
+            <span>Lead</span>
+            <span>Provider</span>
+            <span>State</span>
+            <span>Duration</span>
+            <span>Outcome</span>
+            <span />
+          </div>
+          <div className="divide-y divide-border">
+            {calls.data.map((item) => (
+              <div
+                key={item.id}
+                className={`grid gap-3 px-4 py-4 md:grid-cols-[1.25fr_1fr_1fr_1fr_1.4fr_40px] md:items-center md:gap-4 md:px-5 transition ${
+                  item.status === 'in_progress' ? 'bg-emerald-500/[0.02]' : ''
+                }`}
+                data-testid={`row-call-${item.id}`}
+              >
+                <div>
+                  <button
+                    onClick={() => setSelected(item.id)}
+                    className="text-left text-sm font-bold hover:text-[hsl(var(--accent))]"
+                    data-testid={`button-open-call-${item.id}`}
+                  >
+                    {item.lead_name}
+                  </button>
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    {item.phone} · {formatDate(item.started_at)}
+                  </p>
+                </div>
+                <div className="text-sm">
+                  <span className="font-medium">{item.provider}</span>
+                  {item.transferred && (
+                    <span className="ml-2 text-[11px] text-[hsl(var(--accent))]">Transferred</span>
+                  )}
+                </div>
+                <div>
+                  <CallStatusBadge status={item.status} />
+                </div>
+                <div className="font-mono text-xs text-muted-foreground">
+                  {item.status === 'in_progress' ? (
+                    <span className="font-bold text-emerald-600 dark:text-emerald-400">
+                      <LiveCallDuration startedAt={item.started_at} status={item.status} durationSeconds={item.duration_seconds} />
+                    </span>
+                  ) : item.status === 'queued' ? (
+                    <span className="text-amber-600 dark:text-amber-400">Connecting…</span>
+                  ) : (
+                    <span>{formatDuration(item.duration_seconds)}</span>
+                  )}
+                </div>
+                <div>
+                  <p className="line-clamp-2 text-sm">{item.outcome || item.summary || 'No outcome recorded'}</p>
+                  {item.error_state && (
+                    <p className="mt-1 text-xs text-[hsl(var(--destructive))]">{item.error_state}</p>
+                  )}
+                </div>
+                <button
+                  className="rounded-lg p-2 text-muted-foreground hover:bg-[hsl(var(--muted))]"
+                  onClick={() => setSelected(item.id)}
+                  data-testid={`button-call-menu-${item.id}`}
+                >
+                  <MoreHorizontal size={16} />
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Call Detail Drawer */}
+      {selected && (
+        <div
+          className="fixed inset-0 z-40 flex justify-end bg-[#102632]/30"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setSelected(null);
+          }}
+        >
+          <div className="h-full w-full max-w-[510px] overflow-y-auto bg-[hsl(var(--card))] p-6 shadow-2xl">
+            <div className="flex justify-between items-start">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-[.18em] text-[hsl(var(--accent))]">
+                  Call detail
+                </p>
+                <h2 className="mt-1 text-2xl font-bold">{call.data?.lead_name || 'Call'}</h2>
+                {call.data?.phone && (
+                  <p className="text-xs text-muted-foreground mt-0.5">{call.data.phone}</p>
+                )}
+              </div>
+              <button
+                onClick={() => setSelected(null)}
+                data-testid="button-close-call"
+                className="rounded-lg p-1 text-muted-foreground hover:bg-[hsl(var(--muted))]"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {call.isLoading ? (
+              <div className="mt-8 space-y-3">
+                <Skeleton className="h-24" />
+                <Skeleton className="h-40" />
+              </div>
+            ) : (
+              call.data && (
+                <>
+                  {call.data.status === 'in_progress' && (
+                    <div className="mt-5 flex items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-800 dark:text-emerald-300">
+                      <span className="relative flex h-2 w-2">
+                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                        <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+                      </span>
+                      <span>Call is actively live with Retell</span>
+                    </div>
+                  )}
+
+                  {call.data.status === 'queued' && (
+                    <div className="mt-5 flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-300">
+                      <span className="relative inline-flex h-2 w-2 animate-pulse rounded-full bg-amber-500" />
+                      <span>Connecting to Retell provider · awaiting call start</span>
+                    </div>
+                  )}
+
+                  <div className="mt-6 grid grid-cols-2 gap-3">
+                    <div className="rounded-lg border border-border bg-[hsl(var(--muted)/.3)] p-3">
+                      <p className="text-[10px] font-bold uppercase tracking-[.14em] text-muted-foreground">State</p>
+                      <div className="mt-1.5">
+                        <CallStatusBadge status={call.data.status} />
+                      </div>
+                    </div>
+                    <Info label="Provider" value={call.data.provider} />
+                    <Info label="Started" value={formatTime(call.data.started_at)} />
+                    {call.data.status === 'in_progress' ? (
+                      <div className="rounded-lg border border-border bg-[hsl(var(--muted)/.3)] p-3">
+                        <p className="text-[10px] font-bold uppercase tracking-[.14em] text-muted-foreground">Live Duration</p>
+                        <p className="mt-1 font-mono font-bold text-emerald-600 dark:text-emerald-400">
+                          <LiveCallDuration startedAt={call.data.started_at} status={call.data.status} durationSeconds={call.data.duration_seconds} />
+                        </p>
+                      </div>
+                    ) : (
+                      <Info label="Duration" value={formatDuration(call.data.duration_seconds)} />
+                    )}
+                    {call.data.ended_at && (
+                      <Info label="Ended" value={formatTime(call.data.ended_at)} />
+                    )}
+                  </div>
+
+                  <div className="mt-6 rounded-xl bg-[hsl(var(--muted)/.55)] p-4">
+                    <p className="text-[10px] font-bold uppercase tracking-[.15em] text-muted-foreground">Summary</p>
+                    <p className="mt-2 text-sm leading-6">{call.data.summary || 'No summary recorded.'}</p>
+                  </div>
+
+                  <div className="mt-4 flex gap-2">
+                    <Badge className={call.data.booked ? statusTone('confirmed') : statusTone('created')}>
+                      {call.data.booked ? 'Appointment booked' : 'No booking'}
+                    </Badge>
+                    {call.data.transferred && <Badge className={statusTone('qualified')}>Transferred</Badge>}
+                  </div>
+                </>
+              )
+            )}
+
+            {call.data?.error_state && (
+              <div className="mt-5 rounded-lg border border-[hsl(var(--destructive)/.25)] p-4 text-sm text-[hsl(var(--destructive))]">
+                <AlertTriangle size={15} className="mr-2 inline" />
+                {call.data.error_state}
+              </div>
+            )}
+
+            <Button
+              variant="primary"
+              className="mt-7 w-full"
+              onClick={() => {
+                if (call.data) startCall.mutate({ data: { lead_id: call.data.lead_id } });
+              }}
+              disabled={!call.data || startCall.isPending || call.data.status === 'in_progress'}
+              data-testid="button-retry-call"
+            >
+              <PhoneCall size={15} />
+              {call.data?.status === 'in_progress' ? 'Call in progress' : 'Retry call'}
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function AppointmentsPage() {
