@@ -1016,5 +1016,156 @@ describe("Retell Webhook Signature & Call Lifecycle", () => {
 
       expect(res.status).toBe(401);
     });
+
+    describe("Focused Retell Signature 401 Verification Tests (A - G)", () => {
+      it("A. Valid Retell signature with exact raw body -> 202 accepted", async () => {
+        const now = Date.now();
+        const payload = {
+          event: "call_ended",
+          call: {
+            call_id: "call_retell_valid_raw",
+            call_status: "ended",
+            metadata: { business_id: "biz_retell_1" },
+          },
+        };
+        const rawBodyStr = JSON.stringify(payload);
+        const signature = computeRetellSignature(rawBodyStr, TEST_API_KEY, now);
+
+        const res = await supertest(app)
+          .post("/api/webhooks/retell")
+          .set("Content-Type", "application/json")
+          .set("x-retell-signature", signature)
+          .send(payload);
+
+        expect(res.status).toBe(202);
+        expect(res.body.accepted).toBe(true);
+      });
+
+      it("B. Invalid signature -> 401", async () => {
+        const now = Date.now();
+        const payload = {
+          event: "call_ended",
+          call: {
+            call_id: "call_retell_invalid_sig",
+            metadata: { business_id: "biz_retell_1" },
+          },
+        };
+        const invalidSig = computeRetellSignature(JSON.stringify(payload), "wrong_secret_key", now);
+
+        const res = await supertest(app)
+          .post("/api/webhooks/retell")
+          .set("Content-Type", "application/json")
+          .set("x-retell-signature", invalidSig)
+          .send(payload);
+
+        expect(res.status).toBe(401);
+        expect(res.body.error).toBe("Invalid Retell signature");
+      });
+
+      it("C. Modified body after signing -> 401", async () => {
+        const now = Date.now();
+        const originalPayload = {
+          event: "call_ended",
+          call: {
+            call_id: "call_retell_orig",
+            metadata: { business_id: "biz_retell_1" },
+          },
+        };
+        const signature = computeRetellSignature(JSON.stringify(originalPayload), TEST_API_KEY, now);
+
+        const tamperedPayload = {
+          event: "call_ended",
+          call: {
+            call_id: "call_retell_tampered",
+            metadata: { business_id: "biz_retell_1" },
+          },
+        };
+
+        const res = await supertest(app)
+          .post("/api/webhooks/retell")
+          .set("Content-Type", "application/json")
+          .set("x-retell-signature", signature)
+          .send(tamperedPayload);
+
+        expect(res.status).toBe(401);
+        expect(res.body.error).toBe("Invalid Retell signature");
+      });
+
+      it("D. Old timestamp -> 401", async () => {
+        const oldTime = Date.now() - 6 * 60 * 1000;
+        const payload = {
+          event: "call_ended",
+          call: {
+            call_id: "call_retell_stale",
+            metadata: { business_id: "biz_retell_1" },
+          },
+        };
+        const staleSig = computeRetellSignature(JSON.stringify(payload), TEST_API_KEY, oldTime);
+
+        const res = await supertest(app)
+          .post("/api/webhooks/retell")
+          .set("Content-Type", "application/json")
+          .set("x-retell-signature", staleSig)
+          .send(payload);
+
+        expect(res.status).toBe(401);
+        expect(res.body.error).toBe("Invalid Retell signature");
+      });
+
+      it("E. Missing signature -> 401", async () => {
+        const payload = {
+          event: "call_ended",
+          call: {
+            call_id: "call_retell_no_sig",
+            metadata: { business_id: "biz_retell_1" },
+          },
+        };
+
+        const res = await supertest(app)
+          .post("/api/webhooks/retell")
+          .set("Content-Type", "application/json")
+          .send(payload);
+
+        expect(res.status).toBe(401);
+        expect(res.body.error).toBe("Invalid Retell signature");
+      });
+
+      it("F. Raw body is preserved exactly and is NOT regenerated using JSON.stringify(req.body)", async () => {
+        const now = Date.now();
+        const formattedPrettyJson = '{\n  "event": "call_ended",\n  "call": {\n    "call_id": "call_pretty_123",\n    "metadata": {\n      "business_id": "biz_retell_1"\n    }\n  }\n}';
+        const signature = computeRetellSignature(formattedPrettyJson, TEST_API_KEY, now);
+
+        const res = await supertest(app)
+          .post("/api/webhooks/retell")
+          .set("Content-Type", "application/json")
+          .set("x-retell-signature", signature)
+          .send(formattedPrettyJson);
+
+        expect(res.status).toBe(202);
+        expect(res.body.accepted).toBe(true);
+      });
+
+      it("G. Retell dashboard test webhook request is accepted successfully (200) if valid Retell signature present without business_id", async () => {
+        const now = Date.now();
+        const dashboardTestPing = {
+          event: "call_ended",
+          call: {
+            call_id: "retell_dashboard_test_ping_xyz",
+            agent_id: "agent_dashboard_1",
+            call_status: "ended",
+          },
+        };
+        const signature = computeRetellSignature(JSON.stringify(dashboardTestPing), TEST_API_KEY, now);
+
+        const res = await supertest(app)
+          .post("/api/webhooks/retell")
+          .set("Content-Type", "application/json")
+          .set("x-retell-signature", signature)
+          .send(dashboardTestPing);
+
+        expect(res.status).toBe(200);
+        expect(res.body).toEqual({ accepted: true, test: true });
+      });
+    });
   });
 });

@@ -252,11 +252,11 @@ export async function createCalBooking(input: {
 }
 
 export function verifyWebhookSignature(
-  rawBody: Buffer,
+  rawBody: Buffer | undefined | null,
   signature: string | undefined,
   secret: string | undefined,
 ): boolean {
-  if (!signature || !secret) return false;
+  if (!rawBody || !signature || !secret) return false;
   const provided = signature.replace(/^sha256=/, "").trim();
   const expected = crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
   const providedBuffer = Buffer.from(provided, "utf8");
@@ -280,11 +280,15 @@ export interface RetellVerificationResult {
  * Secret: Retell API key (or configured signing secret)
  */
 export function verifyRetellSignature(
-  rawBody: Buffer | string,
+  rawBody: Buffer | string | undefined | null,
   signature: string | undefined,
   secret: string | undefined,
   opts: { maxAgeMs?: number; now?: number } = {},
 ): RetellVerificationResult {
+  if (rawBody === undefined || rawBody === null) {
+    return { valid: false, reason: "Missing raw request body" };
+  }
+
   if (!signature || !secret) {
     return { valid: false, reason: "Missing signature or secret" };
   }

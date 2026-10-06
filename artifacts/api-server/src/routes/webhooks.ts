@@ -72,8 +72,8 @@ export function verifyTimestampFreshness(
   return { valid: true };
 }
 
-function rawBody(req: Request): Buffer {
-  return (req as Request & { rawBody?: Buffer }).rawBody ?? Buffer.from(JSON.stringify(req.body ?? {}));
+function rawBody(req: Request): Buffer | undefined {
+  return (req as Request & { rawBody?: Buffer }).rawBody;
 }
 
 function eventId(req: Request, body: Record<string, unknown>): string {
@@ -82,7 +82,8 @@ function eventId(req: Request, body: Record<string, unknown>): string {
     (typeof body.id === "string" && body.id) ||
     req.get("x-event-id") ||
     undefined;
-  return candidate ?? crypto.createHash("sha256").update(rawBody(req)).digest("hex");
+  const raw = rawBody(req) ?? Buffer.from(JSON.stringify(body ?? {}));
+  return candidate ?? crypto.createHash("sha256").update(raw).digest("hex");
 }
 
 async function acceptProviderEvent(
@@ -132,7 +133,8 @@ function signatureFor(req: Request): string | undefined {
 
 router.post("/webhooks/intake", async (req, res): Promise<void> => {
   const config = providerConfig();
-  if (!verifyWebhookSignature(rawBody(req), signatureFor(req), config.intakeWebhookSecret)) {
+  const raw = rawBody(req);
+  if (!raw || !verifyWebhookSignature(raw, signatureFor(req), config.intakeWebhookSecret)) {
     res.status(401).json({ error: "Invalid intake signature" });
     return;
   }
@@ -515,15 +517,28 @@ router.post("/webhooks/retell", async (req, res): Promise<void> => {
         ? config.retell.webhookSecret
         : undefined;
 
-    let verification = verifyRetellSignature(rawBody(req), signature, primarySecret);
+    const raw = rawBody(req);
+    let usedSecretSource = config.retell.apiKey ? "RETELL_API_KEY" : "RETELL_WEBHOOK_SECRET";
+    let verification = verifyRetellSignature(raw, signature, primarySecret);
     if (!verification.valid && fallbackSecret) {
-      const fallbackVerification = verifyRetellSignature(rawBody(req), signature, fallbackSecret);
+      const fallbackVerification = verifyRetellSignature(raw, signature, fallbackSecret);
       if (fallbackVerification.valid) {
         verification = fallbackVerification;
+        usedSecretSource = "RETELL_WEBHOOK_SECRET";
       }
     }
 
     if (!verification.valid) {
+      logger.warn(
+        {
+          hasSignature: Boolean(signature),
+          rawBodyLength: raw ? raw.length : 0,
+          parsedTimestampAgeMs: verification.timestamp ? Math.abs(Date.now() - verification.timestamp) : undefined,
+          secretSource: primarySecret ? usedSecretSource : "none",
+          reason: verification.reason,
+        },
+        "Retell webhook signature verification failed",
+      );
       res.status(401).json({ error: "Invalid Retell signature" });
       return;
     }
