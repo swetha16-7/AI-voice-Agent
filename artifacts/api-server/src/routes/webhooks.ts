@@ -16,6 +16,7 @@ import {
 } from "@workspace/db";
 import {
   providerConfig,
+  verifyRetellSignature,
   verifyTwilioSignature,
   verifyWebhookSignature,
 } from "../lib/providers";
@@ -471,36 +472,105 @@ router.post("/webhooks/intake", async (req, res): Promise<void> => {
 
 router.post("/webhooks/retell", async (req, res): Promise<void> => {
   const config = providerConfig();
-  if (!verifyWebhookSignature(rawBody(req), signatureFor(req), config.retell.webhookSecret)) {
+  const signature = req.get("x-retell-signature") ?? signatureFor(req);
+  const primarySecret = config.retell.apiKey || config.retell.webhookSecret;
+  const fallbackSecret =
+    config.retell.apiKey && config.retell.webhookSecret && config.retell.webhookSecret !== config.retell.apiKey
+      ? config.retell.webhookSecret
+      : undefined;
+
+  let verification = verifyRetellSignature(rawBody(req), signature, primarySecret);
+  if (!verification.valid && fallbackSecret) {
+    const fallbackVerification = verifyRetellSignature(rawBody(req), signature, fallbackSecret);
+    if (fallbackVerification.valid) {
+      verification = fallbackVerification;
+    }
+  }
+
+  if (!verification.valid) {
     res.status(401).json({ error: "Invalid Retell signature" });
     return;
   }
 
   const body = req.body as Record<string, unknown>;
-  const tsCandidate = body.event_timestamp ?? body.timestamp ?? req.get("x-timestamp");
+  const tsCandidate = body.event_timestamp ?? body.timestamp ?? req.get("x-timestamp") ?? verification.timestamp;
   const freshness = verifyTimestampFreshness(tsCandidate as string | number | undefined);
   if (!freshness.valid) {
     res.status(400).json({ error: `Stale webhook: ${freshness.reason}` });
     return;
   }
 
-  const callId = typeof body.call_id === "string" ? body.call_id : typeof body.callId === "string" ? body.callId : "";
-  const metadata = (body.metadata && typeof body.metadata === "object" ? body.metadata : {}) as Record<string, unknown>;
+  const callObj = (body.call && typeof body.call === "object" ? body.call : {}) as Record<string, unknown>;
+
+  const callId =
+    (typeof callObj.call_id === "string" && callObj.call_id) ||
+    (typeof callObj.callId === "string" && callObj.callId) ||
+    (typeof body.call_id === "string" && body.call_id) ||
+    (typeof body.callId === "string" && body.callId) ||
+    "";
+
+  const rawMetadata =
+    (callObj.metadata && typeof callObj.metadata === "object" ? callObj.metadata : undefined) ??
+    (body.metadata && typeof body.metadata === "object" ? body.metadata : {});
+  const metadata = rawMetadata as Record<string, unknown>;
+
   const businessId = typeof metadata.business_id === "string" ? metadata.business_id : "";
   const metadataCallId = typeof metadata.call_id === "string" ? metadata.call_id : "";
-  if (!callId || !businessId) {
+
+  // Allow correctly signed Retell dashboard Test request without metadata.business_id
+  if (!businessId) {
+    res.status(200).json({ accepted: true, test: true });
+    return;
+  }
+
+  if (!callId) {
     res.status(400).json({ error: "call_id and metadata.business_id are required" });
     return;
   }
-  const accepted = await acceptProviderEvent({ businessId, provider: "Retell", externalEventId: eventId(req, body), eventType: typeof body.event === "string" ? body.event : "call_update", payload: body });
-  if (accepted) {
-    const status = typeof body.call_status === "string" ? body.call_status : typeof body.status === "string" ? body.status : "completed";
-    const terminal = ["ended", "call_ended", "completed", "call_analyzed"].includes(status);
-    const duration = typeof body.duration_ms === "number" ? Math.round(body.duration_ms / 1000) : null;
-    const disconnectionReason = typeof body.disconnection_reason === "string" ? body.disconnection_reason : undefined;
 
-    const transferAttempted = body.transfer_attempted === true || typeof body.transfer_to_number === "string";
-    const transferSucceeded = body.transferred === true || body.transfer_successful === true;
+  const accepted = await acceptProviderEvent({
+    businessId,
+    provider: "Retell",
+    externalEventId: eventId(req, body),
+    eventType: typeof body.event === "string" ? body.event : "call_update",
+    payload: body,
+  });
+
+  if (accepted) {
+    const status =
+      typeof callObj.call_status === "string"
+        ? callObj.call_status
+        : typeof body.call_status === "string"
+        ? body.call_status
+        : typeof callObj.status === "string"
+        ? callObj.status
+        : typeof body.status === "string"
+        ? body.status
+        : "completed";
+    const terminal = ["ended", "call_ended", "completed", "call_analyzed"].includes(status);
+    const duration =
+      typeof callObj.duration_ms === "number"
+        ? Math.round(callObj.duration_ms / 1000)
+        : typeof body.duration_ms === "number"
+        ? Math.round(body.duration_ms / 1000)
+        : null;
+    const disconnectionReason =
+      typeof callObj.disconnection_reason === "string"
+        ? callObj.disconnection_reason
+        : typeof body.disconnection_reason === "string"
+        ? body.disconnection_reason
+        : undefined;
+
+    const transferAttempted =
+      callObj.transfer_attempted === true ||
+      typeof callObj.transfer_to_number === "string" ||
+      body.transfer_attempted === true ||
+      typeof body.transfer_to_number === "string";
+    const transferSucceeded =
+      callObj.transferred === true ||
+      callObj.transfer_successful === true ||
+      body.transferred === true ||
+      body.transfer_successful === true;
     const failedTransferReasons = ["dial_failed", "dial_no_answer", "dial_busy", "voicemail_reached", "transfer_failed"];
     const transferFailed = transferAttempted && !transferSucceeded && (disconnectionReason ? failedTransferReasons.includes(disconnectionReason) : true);
 
@@ -513,13 +583,22 @@ router.post("/webhooks/retell", async (req, res): Promise<void> => {
     }
 
     if (callRow) {
+      const summaryCandidate =
+        typeof callObj.call_analysis === "string"
+          ? callObj.call_analysis
+          : typeof (callObj.call_analysis as any)?.call_summary === "string"
+          ? (callObj.call_analysis as any).call_summary
+          : typeof body.call_analysis === "string"
+          ? body.call_analysis
+          : undefined;
+
       await db.update(callsTable).set({
         status: terminal ? "completed" : status === "failed" ? "failed" : "in_progress",
         endedAt: terminal || status === "failed" ? new Date() : undefined,
         durationSeconds: duration ?? undefined,
         providerCallId: callId,
         transferred: transferAttempted ? transferSucceeded : undefined,
-        summary: typeof body.call_analysis === "string" ? body.call_analysis : undefined,
+        summary: summaryCandidate,
         outcome: transferFailed
           ? "Transfer failed — message captured for manual follow-up"
           : disconnectionReason,

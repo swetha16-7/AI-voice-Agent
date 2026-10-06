@@ -66,24 +66,15 @@ export const envSchema = z
       }
     }
 
-    // 4. Retell consistency: if API key or webhook secret is provided, both are required
+    // 4. Retell consistency: RETELL_API_KEY is the primary credential; RETELL_WEBHOOK_SECRET is optional
     const hasRetellKey = Boolean(data.RETELL_API_KEY?.trim());
     const hasRetellSecret = Boolean(data.RETELL_WEBHOOK_SECRET?.trim());
-    if (hasRetellKey || hasRetellSecret) {
-      if (!hasRetellKey) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["RETELL_API_KEY"],
-          message: "RETELL_API_KEY is required when Retell integration is enabled (RETELL_WEBHOOK_SECRET is present)",
-        });
-      }
-      if (!hasRetellSecret) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["RETELL_WEBHOOK_SECRET"],
-          message: "RETELL_WEBHOOK_SECRET is required when Retell integration is enabled (RETELL_API_KEY is present)",
-        });
-      }
+    if (hasRetellSecret && !hasRetellKey) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["RETELL_API_KEY"],
+        message: "RETELL_API_KEY is required when Retell integration is enabled (RETELL_WEBHOOK_SECRET is present)",
+      });
     }
 
     // 5. Cal.com consistency: if any Cal.com key is configured, all required keys must be present

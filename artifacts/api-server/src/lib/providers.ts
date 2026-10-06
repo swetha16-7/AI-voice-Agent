@@ -266,3 +266,71 @@ export function verifyWebhookSignature(
     crypto.timingSafeEqual(providedBuffer, expectedBuffer)
   );
 }
+
+export interface RetellVerificationResult {
+  valid: boolean;
+  timestamp?: number;
+  reason?: string;
+}
+
+/**
+ * Verify a Retell AI webhook request signature according to Retell's specification:
+ * Header: X-Retell-Signature: v=<timestamp_ms>,d=<hex_digest>
+ * Message: raw_body_string + timestamp
+ * Secret: Retell API key (or configured signing secret)
+ */
+export function verifyRetellSignature(
+  rawBody: Buffer | string,
+  signature: string | undefined,
+  secret: string | undefined,
+  opts: { maxAgeMs?: number; now?: number } = {},
+): RetellVerificationResult {
+  if (!signature || !secret) {
+    return { valid: false, reason: "Missing signature or secret" };
+  }
+
+  const match = /^v=(\d+),d=([0-9a-f]+)$/i.exec(signature.trim());
+  if (!match) {
+    return { valid: false, reason: "Malformed X-Retell-Signature header format" };
+  }
+
+  const poststamp = Number(match[1]);
+  const postDigest = match[2].toLowerCase();
+  const maxAgeMs = opts.maxAgeMs ?? 5 * 60 * 1000;
+  const now = opts.now ?? Date.now();
+
+  if (!Number.isSafeInteger(poststamp) || Math.abs(now - poststamp) > maxAgeMs) {
+    return { valid: false, timestamp: poststamp, reason: "Timestamp outside freshness window" };
+  }
+
+  const bodyStr = typeof rawBody === "string" ? rawBody : rawBody.toString("utf8");
+  const expectedDigest = crypto
+    .createHmac("sha256", secret)
+    .update(bodyStr + poststamp)
+    .digest("hex");
+
+  const providedBuffer = Buffer.from(postDigest, "utf8");
+  const expectedBuffer = Buffer.from(expectedDigest, "utf8");
+
+  if (
+    providedBuffer.length !== expectedBuffer.length ||
+    !crypto.timingSafeEqual(providedBuffer, expectedBuffer)
+  ) {
+    return { valid: false, timestamp: poststamp, reason: "Signature mismatch" };
+  }
+
+  return { valid: true, timestamp: poststamp };
+}
+
+/**
+ * Helper to generate authentic Retell webhook signatures for testing.
+ */
+export function computeRetellSignature(
+  body: string | Buffer,
+  secret: string,
+  timestamp: number = Date.now(),
+): string {
+  const bodyStr = typeof body === "string" ? body : body.toString("utf8");
+  const digest = crypto.createHmac("sha256", secret).update(bodyStr + timestamp).digest("hex");
+  return `v=${timestamp},d=${digest}`;
+}

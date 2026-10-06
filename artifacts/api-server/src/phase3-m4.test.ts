@@ -184,6 +184,7 @@ vi.mock("./lib/usage", async () => {
 
 // Import after vi.mock
 import webhooksRouter, { verifyTimestampFreshness, MAX_WEBHOOK_AGE_MS } from "./routes/webhooks";
+import { computeRetellSignature } from "./lib/providers";
 
 const TEST_RETELL_SECRET = "retell_webhook_secret_test_xyz";
 const TEST_CALCOM_SECRET = "calcom_webhook_secret_test_123";
@@ -213,6 +214,7 @@ describe("Phase 3 Milestone 4: Webhook Freshness Enforcement", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FIXED_NOW));
 
+    process.env.RETELL_API_KEY = TEST_RETELL_SECRET;
     process.env.RETELL_WEBHOOK_SECRET = TEST_RETELL_SECRET;
     process.env.CALCOM_WEBHOOK_SECRET = TEST_CALCOM_SECRET;
     // Correct env var name for intake webhook secret
@@ -371,7 +373,7 @@ describe("Phase 3 Milestone 4: Webhook Freshness Enforcement", () => {
         metadata: { business_id: "biz_1", call_id: "call_1" },
       };
       const bodyStr = JSON.stringify(payload);
-      const signature = computeHmac(bodyStr, TEST_RETELL_SECRET);
+      const signature = computeRetellSignature(bodyStr, TEST_RETELL_SECRET, FIXED_NOW - 10000);
 
       const res = await supertest(app)
         .post("/api/webhooks/retell")
@@ -387,11 +389,12 @@ describe("Phase 3 Milestone 4: Webhook Freshness Enforcement", () => {
       const payload = {
         event: "call_ended",
         call_id: "retell_call_100",
+        event_timestamp: "",
         call_status: "completed",
         metadata: { business_id: "biz_1" },
       };
       const bodyStr = JSON.stringify(payload);
-      const signature = computeHmac(bodyStr, TEST_RETELL_SECRET);
+      const signature = computeRetellSignature(bodyStr, TEST_RETELL_SECRET, FIXED_NOW);
 
       const res = await supertest(app)
         .post("/api/webhooks/retell")
@@ -403,7 +406,7 @@ describe("Phase 3 Milestone 4: Webhook Freshness Enforcement", () => {
       expect(res.body.error).toBe("Stale webhook: Missing timestamp");
     });
 
-    it("16. Retell webhook: stale timestamp is rejected with 400 Stale webhook", async () => {
+    it("16. Retell webhook: stale timestamp is rejected (401 from signature check)", async () => {
       const payload = {
         event: "call_ended",
         call_id: "retell_call_100",
@@ -412,7 +415,8 @@ describe("Phase 3 Milestone 4: Webhook Freshness Enforcement", () => {
         metadata: { business_id: "biz_1" },
       };
       const bodyStr = JSON.stringify(payload);
-      const signature = computeHmac(bodyStr, TEST_RETELL_SECRET);
+      // Stale signature timestamp → verifyRetellSignature rejects before body timestamp is checked
+      const signature = computeRetellSignature(bodyStr, TEST_RETELL_SECRET, FIXED_NOW - 600000);
 
       const res = await supertest(app)
         .post("/api/webhooks/retell")
@@ -420,8 +424,9 @@ describe("Phase 3 Milestone 4: Webhook Freshness Enforcement", () => {
         .set("x-retell-signature", signature)
         .send(payload);
 
-      expect(res.status).toBe(400);
-      expect(res.body.error).toContain("Stale webhook: Timestamp outside freshness window");
+      // Retell stale timestamps are caught at the signature layer (401), not the body freshness layer
+      expect(res.status).toBe(401);
+      expect(res.body.error).toBe("Invalid Retell signature");
     });
 
     it("17. Cal.com webhook: valid signature + fresh createdAt is accepted (202)", async () => {

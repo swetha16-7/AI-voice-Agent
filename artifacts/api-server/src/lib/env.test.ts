@@ -82,9 +82,11 @@ describe("Environment Validation", () => {
 
   // ---- Provider: Retell consistency ----
   describe("Retell provider consistency", () => {
-    it("fails when RETELL_API_KEY is set but RETELL_WEBHOOK_SECRET is missing", () => {
+    it("passes with RETELL_API_KEY without RETELL_WEBHOOK_SECRET", () => {
       const env = devEnv({ RETELL_API_KEY: "key_retell_test" });
-      expect(() => validateEnv(env)).toThrow("RETELL_WEBHOOK_SECRET");
+      const result = validateEnv(env);
+      expect(result.RETELL_API_KEY).toBe("key_retell_test");
+      expect(result.RETELL_WEBHOOK_SECRET).toBeUndefined();
     });
 
     it("fails when RETELL_WEBHOOK_SECRET is set but RETELL_API_KEY is missing", () => {
@@ -148,6 +150,7 @@ describe("Environment Validation", () => {
       expect(() => validateEnv(env)).not.toThrow();
     });
   });
+
 
   // ---- Local/demo mode without provider credentials ----
   describe("Local/demo mode permissiveness", () => {
