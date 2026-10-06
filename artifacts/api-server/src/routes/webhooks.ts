@@ -470,183 +470,443 @@ router.post("/webhooks/intake", async (req, res): Promise<void> => {
   res.status(201).json(result);
 });
 
-router.post("/webhooks/retell", async (req, res): Promise<void> => {
-  const config = providerConfig();
-  const signature = req.get("x-retell-signature") ?? signatureFor(req);
-  const primarySecret = config.retell.apiKey || config.retell.webhookSecret;
-  const fallbackSecret =
-    config.retell.apiKey && config.retell.webhookSecret && config.retell.webhookSecret !== config.retell.apiKey
-      ? config.retell.webhookSecret
-      : undefined;
-
-  let verification = verifyRetellSignature(rawBody(req), signature, primarySecret);
-  if (!verification.valid && fallbackSecret) {
-    const fallbackVerification = verifyRetellSignature(rawBody(req), signature, fallbackSecret);
-    if (fallbackVerification.valid) {
-      verification = fallbackVerification;
+function parseRetellTimestamp(ts: unknown): Date | null {
+  if (ts === null || ts === undefined) return null;
+  if (typeof ts === "number" && !isNaN(ts) && ts > 0) {
+    const tsMs = ts < 10000000000 ? ts * 1000 : ts;
+    return new Date(tsMs);
+  }
+  if (typeof ts === "string" && ts.trim()) {
+    const num = Number(ts.trim());
+    if (!isNaN(num) && num > 0) {
+      const tsMs = num < 10000000000 ? num * 1000 : num;
+      return new Date(tsMs);
     }
+    const d = new Date(ts);
+    if (!isNaN(d.getTime())) return d;
   }
+  return null;
+}
 
-  if (!verification.valid) {
-    res.status(401).json({ error: "Invalid Retell signature" });
-    return;
+function parseRetellDurationSeconds(callObj: Record<string, unknown>, body: Record<string, unknown>): number | undefined {
+  const durationMs =
+    typeof callObj.duration_ms === "number"
+      ? callObj.duration_ms
+      : typeof body.duration_ms === "number"
+      ? body.duration_ms
+      : undefined;
+  if (durationMs !== undefined && !isNaN(durationMs)) {
+    return Math.max(0, Math.round(durationMs / 1000));
   }
+  return undefined;
+}
 
-  const body = req.body as Record<string, unknown>;
-  const tsCandidate = body.event_timestamp ?? body.timestamp ?? req.get("x-timestamp") ?? verification.timestamp;
-  const freshness = verifyTimestampFreshness(tsCandidate as string | number | undefined);
-  if (!freshness.valid) {
-    res.status(400).json({ error: `Stale webhook: ${freshness.reason}` });
-    return;
-  }
+router.post("/webhooks/retell", async (req, res): Promise<void> => {
+  let eventType = "call_update";
+  let businessId = "";
+  let callId = "";
 
-  const callObj = (body.call && typeof body.call === "object" ? body.call : {}) as Record<string, unknown>;
-
-  const callId =
-    (typeof callObj.call_id === "string" && callObj.call_id) ||
-    (typeof callObj.callId === "string" && callObj.callId) ||
-    (typeof body.call_id === "string" && body.call_id) ||
-    (typeof body.callId === "string" && body.callId) ||
-    "";
-
-  const rawMetadata =
-    (callObj.metadata && typeof callObj.metadata === "object" ? callObj.metadata : undefined) ??
-    (body.metadata && typeof body.metadata === "object" ? body.metadata : {});
-  const metadata = rawMetadata as Record<string, unknown>;
-
-  const businessId = typeof metadata.business_id === "string" ? metadata.business_id : "";
-  const metadataCallId = typeof metadata.call_id === "string" ? metadata.call_id : "";
-
-  // Allow correctly signed Retell dashboard Test request without metadata.business_id
-  if (!businessId) {
-    res.status(200).json({ accepted: true, test: true });
-    return;
-  }
-
-  if (!callId) {
-    res.status(400).json({ error: "call_id and metadata.business_id are required" });
-    return;
-  }
-
-  const accepted = await acceptProviderEvent({
-    businessId,
-    provider: "Retell",
-    externalEventId: eventId(req, body),
-    eventType: typeof body.event === "string" ? body.event : "call_update",
-    payload: body,
-  });
-
-  if (accepted) {
-    const status =
-      typeof callObj.call_status === "string"
-        ? callObj.call_status
-        : typeof body.call_status === "string"
-        ? body.call_status
-        : typeof callObj.status === "string"
-        ? callObj.status
-        : typeof body.status === "string"
-        ? body.status
-        : "completed";
-    const terminal = ["ended", "call_ended", "completed", "call_analyzed"].includes(status);
-    const duration =
-      typeof callObj.duration_ms === "number"
-        ? Math.round(callObj.duration_ms / 1000)
-        : typeof body.duration_ms === "number"
-        ? Math.round(body.duration_ms / 1000)
-        : null;
-    const disconnectionReason =
-      typeof callObj.disconnection_reason === "string"
-        ? callObj.disconnection_reason
-        : typeof body.disconnection_reason === "string"
-        ? body.disconnection_reason
+  try {
+    const config = providerConfig();
+    const signature = req.get("x-retell-signature") ?? signatureFor(req);
+    const primarySecret = config.retell.apiKey || config.retell.webhookSecret;
+    const fallbackSecret =
+      config.retell.apiKey && config.retell.webhookSecret && config.retell.webhookSecret !== config.retell.apiKey
+        ? config.retell.webhookSecret
         : undefined;
 
-    const transferAttempted =
-      callObj.transfer_attempted === true ||
-      typeof callObj.transfer_to_number === "string" ||
-      body.transfer_attempted === true ||
-      typeof body.transfer_to_number === "string";
-    const transferSucceeded =
-      callObj.transferred === true ||
-      callObj.transfer_successful === true ||
-      body.transferred === true ||
-      body.transfer_successful === true;
-    const failedTransferReasons = ["dial_failed", "dial_no_answer", "dial_busy", "voicemail_reached", "transfer_failed"];
-    const transferFailed = transferAttempted && !transferSucceeded && (disconnectionReason ? failedTransferReasons.includes(disconnectionReason) : true);
-
-    let [callRow] = await db.select().from(callsTable).where(and(eq(callsTable.businessId, businessId), eq(callsTable.providerCallId, callId)));
-    if (!callRow && metadataCallId) {
-      const [orphanCall] = await db.select().from(callsTable).where(and(eq(callsTable.businessId, businessId), eq(callsTable.id, metadataCallId)));
-      if (orphanCall) {
-        callRow = orphanCall;
+    let verification = verifyRetellSignature(rawBody(req), signature, primarySecret);
+    if (!verification.valid && fallbackSecret) {
+      const fallbackVerification = verifyRetellSignature(rawBody(req), signature, fallbackSecret);
+      if (fallbackVerification.valid) {
+        verification = fallbackVerification;
       }
     }
 
-    if (callRow) {
-      const summaryCandidate =
-        typeof callObj.call_analysis === "string"
-          ? callObj.call_analysis
-          : typeof (callObj.call_analysis as any)?.call_summary === "string"
-          ? (callObj.call_analysis as any).call_summary
-          : typeof body.call_analysis === "string"
-          ? body.call_analysis
+    if (!verification.valid) {
+      res.status(401).json({ error: "Invalid Retell signature" });
+      return;
+    }
+
+    const body = req.body as Record<string, unknown>;
+    const tsCandidate = body.event_timestamp ?? body.timestamp ?? req.get("x-timestamp") ?? verification.timestamp;
+    const freshness = verifyTimestampFreshness(tsCandidate as string | number | undefined);
+    if (!freshness.valid) {
+      res.status(400).json({ error: `Stale webhook: ${freshness.reason}` });
+      return;
+    }
+
+    const callObj = (body.call && typeof body.call === "object" ? body.call : {}) as Record<string, unknown>;
+
+    callId =
+      (typeof callObj.call_id === "string" && callObj.call_id) ||
+      (typeof callObj.callId === "string" && callObj.callId) ||
+      (typeof body.call_id === "string" && body.call_id) ||
+      (typeof body.callId === "string" && body.callId) ||
+      "";
+
+    const rawMetadata =
+      (callObj.metadata && typeof callObj.metadata === "object" ? callObj.metadata : undefined) ??
+      (body.metadata && typeof body.metadata === "object" ? body.metadata : {});
+    const metadata = rawMetadata as Record<string, unknown>;
+
+    businessId = typeof metadata.business_id === "string" ? metadata.business_id : "";
+    const metadataCallId = typeof metadata.call_id === "string" ? metadata.call_id : "";
+
+    // Allow correctly signed Retell dashboard Test request without metadata.business_id
+    if (!businessId) {
+      res.status(200).json({ accepted: true, test: true });
+      return;
+    }
+
+    if (!callId) {
+      res.status(400).json({ error: "call_id and metadata.business_id are required" });
+      return;
+    }
+
+    eventType =
+      typeof body.event === "string"
+        ? body.event
+        : typeof body.triggerEvent === "string"
+        ? body.triggerEvent
+        : "call_update";
+
+    const explicitEventId =
+      (typeof body.event_id === "string" && body.event_id) ||
+      (typeof body.id === "string" && body.id) ||
+      req.get("x-retell-event-id") ||
+      req.get("x-event-id") ||
+      undefined;
+
+    const retellExternalEventId = explicitEventId || (callId ? `${eventType}:${callId}` : eventId(req, body));
+
+    let result = { accepted: true, duplicate: false };
+
+    await db.transaction(async (tx) => {
+      const accepted = await acceptProviderEvent(
+        {
+          businessId,
+          provider: "Retell",
+          externalEventId: retellExternalEventId,
+          eventType,
+          payload: body,
+        },
+        tx,
+      );
+
+      if (!accepted) {
+        result = { accepted: true, duplicate: true };
+        return;
+      }
+
+      const [business] = await tx
+        .select({ id: businessesTable.id })
+        .from(businessesTable)
+        .where(eq(businessesTable.id, businessId))
+        .limit(1);
+
+      if (!business) {
+        logger.warn({ businessId, callId }, "Retell webhook business tenant not found");
+        return;
+      }
+
+      const rawStatus =
+        typeof callObj.call_status === "string"
+          ? callObj.call_status
+          : typeof body.call_status === "string"
+          ? body.call_status
+          : typeof callObj.status === "string"
+          ? callObj.status
+          : typeof body.status === "string"
+          ? body.status
+          : "";
+
+      const terminalEvents = ["call_ended", "call_analyzed"];
+      const terminalStatuses = ["ended", "call_ended", "completed", "call_analyzed"];
+      const isTerminal = terminalEvents.includes(eventType) || terminalStatuses.includes(rawStatus);
+
+      const durationSeconds = parseRetellDurationSeconds(callObj, body);
+      const disconnectionReason =
+        typeof callObj.disconnection_reason === "string"
+          ? callObj.disconnection_reason
+          : typeof body.disconnection_reason === "string"
+          ? body.disconnection_reason
           : undefined;
 
-      await db.update(callsTable).set({
-        status: terminal ? "completed" : status === "failed" ? "failed" : "in_progress",
-        endedAt: terminal || status === "failed" ? new Date() : undefined,
-        durationSeconds: duration ?? undefined,
-        providerCallId: callId,
-        transferred: transferAttempted ? transferSucceeded : undefined,
-        summary: summaryCandidate,
-        outcome: transferFailed
-          ? "Transfer failed — message captured for manual follow-up"
-          : disconnectionReason,
-        errorState: status === "failed" ? "Retell reported a failed call" : transferFailed ? "transfer_failed" : undefined,
-      }).where(and(eq(callsTable.businessId, businessId), eq(callsTable.id, callRow.id)));
+      const eventStartedAt = parseRetellTimestamp(
+        callObj.start_timestamp ?? body.start_timestamp ?? (eventType === "call_started" ? tsCandidate : undefined),
+      );
+      const eventEndedAt = parseRetellTimestamp(
+        callObj.end_timestamp ?? body.end_timestamp ?? (isTerminal ? tsCandidate : undefined),
+      );
 
-      if (terminal) {
-        await db
-          .update(workflowJobsTable)
-          .set({
-            status: "completed",
-            lockedAt: null,
-            lockedBy: null,
-            leaseExpiresAt: null,
-            lastError: null,
-          })
-          .where(
-            and(
-              eq(workflowJobsTable.businessId, businessId),
-              eq(workflowJobsTable.idempotencyKey, callRow.id),
-            ),
-          );
+      const transferAttempted =
+        callObj.transfer_attempted === true ||
+        typeof callObj.transfer_to_number === "string" ||
+        body.transfer_attempted === true ||
+        typeof body.transfer_to_number === "string";
+      const transferSucceeded =
+        callObj.transferred === true ||
+        callObj.transfer_successful === true ||
+        body.transferred === true ||
+        body.transfer_successful === true;
+      const failedTransferReasons = ["dial_failed", "dial_no_answer", "dial_busy", "voicemail_reached", "transfer_failed"];
+      const transferFailed = transferAttempted && !transferSucceeded && (disconnectionReason ? failedTransferReasons.includes(disconnectionReason) : true);
+
+      const rawAnalysis = callObj.call_analysis ?? body.call_analysis;
+      const summaryCandidate =
+        typeof rawAnalysis === "string"
+          ? rawAnalysis
+          : typeof (rawAnalysis as any)?.call_summary === "string"
+          ? (rawAnalysis as any).call_summary
+          : typeof callObj.summary === "string"
+          ? callObj.summary
+          : typeof body.summary === "string"
+          ? body.summary
+          : undefined;
+
+      // 1. Locate existing call record
+      let [callRow] = await tx
+        .select()
+        .from(callsTable)
+        .where(and(eq(callsTable.businessId, businessId), eq(callsTable.providerCallId, callId)));
+
+      if (!callRow && metadataCallId) {
+        const [orphanCall] = await tx
+          .select()
+          .from(callsTable)
+          .where(and(eq(callsTable.businessId, businessId), eq(callsTable.id, metadataCallId)));
+        if (orphanCall) {
+          callRow = orphanCall;
+        }
       }
-    }
 
-    if (duration != null) {
-      const activeUsage = await getActiveUsageRow(businessId, new Date(), db);
-      await db.update(usageTable).set({
-        voiceMinutes: sql`${usageTable.voiceMinutes} + ${duration / 60}`,
-        estimatedCost: sql`${usageTable.estimatedCost} + ${(duration / 60) * 0.12}`,
-      }).where(eq(usageTable.id, activeUsage.id));
-    }
+      // 2. If call does NOT exist, provision call row when tenant and lead/contact context is available
+      if (!callRow) {
+        const metadataLeadId = typeof metadata.lead_id === "string" ? metadata.lead_id : "";
+        let resolvedContactId: string | null = null;
+        let resolvedLeadId: string | null = null;
 
-    if (transferFailed && callRow) {
-      await db.insert(activitiesTable).values({
-        id: `activity_${crypto.randomUUID().slice(0, 12)}`,
-        businessId,
-        type: "message",
-        title: "Transfer failed — message captured",
-        detail: `Call ${callId}: human transfer did not connect (${disconnectionReason ?? "unknown reason"}). Caller's message/callback request needs manual follow-up.`,
-      });
-      await db.update(leadsTable).set({
-        nextAction: "Call back — transfer to human did not connect",
-        updatedAt: new Date(),
-      }).where(and(eq(leadsTable.id, callRow.leadId), eq(leadsTable.businessId, businessId)));
-    }
+        if (metadataLeadId) {
+          const [existingLead] = await tx
+            .select()
+            .from(leadsTable)
+            .where(and(eq(leadsTable.businessId, businessId), eq(leadsTable.id, metadataLeadId)));
+          if (existingLead) {
+            resolvedLeadId = existingLead.id;
+            resolvedContactId = existingLead.contactId;
+          }
+        }
+
+        if (!resolvedLeadId || !resolvedContactId) {
+          const rawPhone =
+            (typeof callObj.customer_number === "string" && callObj.customer_number) ||
+            (typeof callObj.to_number === "string" && callObj.to_number) ||
+            (typeof callObj.from_number === "string" && callObj.from_number) ||
+            (typeof body.to_number === "string" && body.to_number) ||
+            (typeof body.from_number === "string" && body.from_number) ||
+            "";
+
+          const normalized = rawPhone ? normalizeToE164(rawPhone) : null;
+          const phoneToUse = normalized && normalized.valid ? normalized.e164 : (rawPhone || "+10000000000");
+
+          const [existingContact] = await tx
+            .select()
+            .from(contactsTable)
+            .where(and(eq(contactsTable.businessId, businessId), eq(contactsTable.phone, phoneToUse)));
+
+          if (existingContact) {
+            resolvedContactId = existingContact.id;
+            const [latestLead] = await tx
+              .select()
+              .from(leadsTable)
+              .where(and(eq(leadsTable.businessId, businessId), eq(leadsTable.contactId, existingContact.id)))
+              .orderBy(desc(leadsTable.createdAt))
+              .limit(1);
+            if (latestLead) {
+              resolvedLeadId = latestLead.id;
+            }
+          }
+
+          if (!resolvedContactId) {
+            const newContactId = `contact_${crypto.randomUUID().slice(0, 12)}`;
+            await tx.insert(contactsTable).values({
+              id: newContactId,
+              businessId,
+              name: "Inbound Caller",
+              phone: phoneToUse,
+            });
+            resolvedContactId = newContactId;
+          }
+
+          if (!resolvedLeadId && resolvedContactId) {
+            const newLeadId = `lead_${crypto.randomUUID().slice(0, 12)}`;
+            await tx.insert(leadsTable).values({
+              id: newLeadId,
+              businessId,
+              contactId: resolvedContactId,
+              source: "Retell Inbound",
+              campaign: "Inbound Call",
+              project: "Inbound Project",
+              propertyType: "Not specified",
+              budgetLabel: "Not specified",
+              location: "Not specified",
+              timeline: "Not specified",
+              intentScore: 50,
+              score: "warm",
+              status: isTerminal ? "contacted" : "in_progress",
+              nextAction: isTerminal ? "Review call summary" : "Inbound call active",
+            });
+            resolvedLeadId = newLeadId;
+          }
+        }
+
+        if (resolvedContactId && resolvedLeadId) {
+          const newCallId = metadataCallId || `call_${crypto.randomUUID().slice(0, 12)}`;
+          const initialStatus = isTerminal
+            ? rawStatus === "failed" || disconnectionReason === "error"
+              ? "failed"
+              : "completed"
+            : "in_progress";
+
+          const [insertedCall] = await tx
+            .insert(callsTable)
+            .values({
+              id: newCallId,
+              businessId,
+              contactId: resolvedContactId,
+              leadId: resolvedLeadId,
+              provider: "Retell",
+              providerCallId: callId,
+              idempotencyKey: `retell_${callId}`,
+              status: initialStatus,
+              startedAt: eventStartedAt ?? (eventType === "call_started" ? new Date() : undefined),
+              endedAt: isTerminal ? eventEndedAt ?? new Date() : undefined,
+              durationSeconds: durationSeconds,
+              summary: summaryCandidate ?? (isTerminal ? "Retell call completed." : "Live Retell call started."),
+              outcome: transferFailed
+                ? "Transfer failed — message captured for manual follow-up"
+                : disconnectionReason ?? (isTerminal ? "Completed" : "In progress"),
+              transferred: transferAttempted ? transferSucceeded : false,
+              errorState: rawStatus === "failed" ? "Retell reported a failed call" : transferFailed ? "transfer_failed" : undefined,
+            })
+            .onConflictDoNothing()
+            .returning();
+
+          if (insertedCall) {
+            callRow = insertedCall;
+          }
+        }
+      }
+
+      // 3. If callRow exists (pre-existing or provisioned), update it monotonically
+      if (callRow) {
+        let finalStatus: string;
+        if (eventType === "call_started") {
+          // Monotonic: if already completed or failed, do NOT regress to in_progress
+          finalStatus = ["completed", "failed"].includes(callRow.status) ? callRow.status : "in_progress";
+        } else if (eventType === "call_ended") {
+          finalStatus = rawStatus === "failed" || disconnectionReason === "error" ? "failed" : "completed";
+        } else if (eventType === "call_analyzed") {
+          finalStatus = callRow.status === "failed" || rawStatus === "failed" ? "failed" : "completed";
+        } else {
+          finalStatus = isTerminal
+            ? rawStatus === "failed" || disconnectionReason === "error"
+              ? "failed"
+              : "completed"
+            : ["completed", "failed"].includes(callRow.status)
+            ? callRow.status
+            : "in_progress";
+        }
+
+        const finalStartedAt = eventStartedAt ?? callRow.startedAt ?? (eventType === "call_started" ? new Date() : undefined);
+        const finalEndedAt = eventEndedAt ?? (isTerminal ? callRow.endedAt ?? new Date() : callRow.endedAt);
+        const finalDuration = durationSeconds ?? callRow.durationSeconds;
+        const finalSummary = summaryCandidate ?? callRow.summary;
+        const finalOutcome = transferFailed
+          ? "Transfer failed — message captured for manual follow-up"
+          : disconnectionReason ?? (isTerminal && callRow.outcome === "Queued" ? "Completed" : callRow.outcome);
+        const finalErrorState =
+          finalStatus === "failed"
+            ? "Retell reported a failed call"
+            : transferFailed
+            ? "transfer_failed"
+            : callRow.errorState;
+
+        await tx
+          .update(callsTable)
+          .set({
+            status: finalStatus,
+            startedAt: finalStartedAt,
+            endedAt: finalEndedAt,
+            durationSeconds: finalDuration,
+            providerCallId: callId,
+            transferred: transferAttempted ? transferSucceeded : callRow.transferred,
+            summary: finalSummary,
+            outcome: finalOutcome,
+            errorState: finalErrorState,
+          })
+          .where(and(eq(callsTable.businessId, businessId), eq(callsTable.id, callRow.id)));
+
+        if (isTerminal) {
+          await tx
+            .update(workflowJobsTable)
+            .set({
+              status: "completed",
+              lockedAt: null,
+              lockedBy: null,
+              leaseExpiresAt: null,
+              lastError: null,
+            })
+            .where(
+              and(
+                eq(workflowJobsTable.businessId, businessId),
+                eq(workflowJobsTable.idempotencyKey, callRow.id),
+              ),
+            );
+        }
+
+        // Usage update: avoid double-counting on multiple webhook events for the same call
+        if (durationSeconds != null && durationSeconds > 0) {
+          const previousRecordedDuration = callRow.durationSeconds ?? 0;
+          const incrementalSeconds = Math.max(0, durationSeconds - previousRecordedDuration);
+          if (incrementalSeconds > 0) {
+            const activeUsage = await getActiveUsageRow(businessId, new Date(), tx);
+            await tx
+              .update(usageTable)
+              .set({
+                voiceMinutes: sql`${usageTable.voiceMinutes} + ${incrementalSeconds / 60}`,
+                estimatedCost: sql`${usageTable.estimatedCost} + ${(incrementalSeconds / 60) * 0.12}`,
+              })
+              .where(eq(usageTable.id, activeUsage.id));
+          }
+        }
+
+        if (transferFailed) {
+          await tx.insert(activitiesTable).values({
+            id: `activity_${crypto.randomUUID().slice(0, 12)}`,
+            businessId,
+            type: "message",
+            title: "Transfer failed — message captured",
+            detail: `Call ${callId}: human transfer did not connect (${disconnectionReason ?? "unknown reason"}). Caller's message/callback request needs manual follow-up.`,
+          });
+          await tx
+            .update(leadsTable)
+            .set({
+              nextAction: "Call back — transfer to human did not connect",
+              updatedAt: new Date(),
+            })
+            .where(and(eq(leadsTable.id, callRow.leadId), eq(leadsTable.businessId, businessId)));
+        }
+      }
+    });
+
+    res.status(202).json(result);
+  } catch (err) {
+    logger.error({ err, eventType, businessId, callId }, "Failed to process Retell webhook event");
+    res.status(500).json({ error: "Failed to process Retell event" });
+    return;
   }
-  res.status(202).json({ accepted: true, duplicate: !accepted });
 });
 
 router.post("/webhooks/twilio/status", async (req, res): Promise<void> => {
