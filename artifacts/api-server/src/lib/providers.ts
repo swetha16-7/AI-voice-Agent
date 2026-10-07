@@ -133,6 +133,7 @@ export async function startRetellCall(input: {
 export function hasRetellConfigForMarket(
   market?: "US" | "IN",
   fromNumberOverride?: string,
+  agentIdOverride?: string,
 ): boolean {
   const config = providerConfig().retell;
   const fallbackFrom =
@@ -142,7 +143,8 @@ export function hasRetellConfigForMarket(
         ? config.fromNumberUS ?? config.fromNumber
         : config.fromNumberUS ?? config.fromNumberIN ?? config.fromNumber;
   const fromNumber = fromNumberOverride?.trim() || fallbackFrom;
-  return Boolean(config.apiKey && config.agentId && fromNumber);
+  const agentId = agentIdOverride?.trim() || config.agentId;
+  return Boolean(config.apiKey && agentId && fromNumber);
 }
 
 export function hasTwilioRoute(market: "US" | "IN"): boolean {

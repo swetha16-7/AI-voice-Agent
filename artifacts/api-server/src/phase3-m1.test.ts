@@ -87,6 +87,20 @@ describe("Phase 3 Milestone 1 — Multi-Tenant Provider Binding & Usage Enforcem
       expect(hasRetellConfigForMarket("US")).toBe(false);
       expect(hasRetellConfigForMarket("US", "+12125550101")).toBe(true);
     });
+
+    it("hasRetellConfigForMarket recognizes tenant agent ID and overrides global", () => {
+      process.env["RETELL_API_KEY"] = "test_key";
+      process.env["RETELL_FROM_NUMBER"] = "+12125550101";
+      
+      // Missing global agent ID, but passed via override
+      delete process.env["RETELL_AGENT_ID"];
+      expect(hasRetellConfigForMarket("US")).toBe(false);
+      expect(hasRetellConfigForMarket("US", undefined, "tenant_agent")).toBe(true);
+
+      // Global agent ID present, override should still pass
+      process.env["RETELL_AGENT_ID"] = "global_agent";
+      expect(hasRetellConfigForMarket("US", undefined, "tenant_agent")).toBe(true);
+    });
   });
 
   describe("B. Cal.com Tenant Event Type Routing", () => {

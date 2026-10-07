@@ -545,7 +545,7 @@ router.post("/calls/start", async (req, res): Promise<void> => {
   const [created] = await db.insert(callsTable).values({ id: callId, businessId: BUSINESS_ID, contactId, leadId: body.data.lead_id, provider: "Retell", idempotencyKey: `manual_${callId}`, status: "queued", outcome: "Queued for provider", summary: "Call queued for the approved qualification script." }).returning();
   let current = created;
   const businessFromNumber = business?.phoneNumber?.trim() || undefined;
-  const liveRetell = hasRetellConfigForMarket(business?.market === "IN" ? "IN" : "US", businessFromNumber);
+  const liveRetell = hasRetellConfigForMarket(business?.market === "IN" ? "IN" : "US", businessFromNumber, business?.retellAgentId ?? undefined);
   if (liveRetell) {
     try {
       const live = await startRetellCall({
@@ -835,7 +835,7 @@ router.get("/today", async (_req, res): Promise<void> => {
   const businessFromNumber = business?.phoneNumber?.trim() || undefined;
   const effectiveEventTypeId = business?.calEventTypeId?.trim() || undefined;
   const warnings = [
-    ...(hasRetellConfigForMarket(business?.market === "IN" ? "IN" : "US", businessFromNumber) ? [] : ["Retell live calling is not configured; calls stay in safe demo mode"]),
+    ...(hasRetellConfigForMarket(business?.market === "IN" ? "IN" : "US", businessFromNumber, business?.retellAgentId ?? undefined) ? [] : ["Retell live calling is not configured; calls stay in safe demo mode"]),
     ...(hasCalConfig(effectiveEventTypeId) ? [] : ["Cal.com live booking is not configured; availability stays simulated"]),
     ...(business?.market === "IN" && !hasTwilioRoute("IN") ? ["India telephony route is not configured"] : []),
     ...(business?.market !== "IN" && !hasTwilioRoute("US") ? ["US telephony route is not configured"] : []),

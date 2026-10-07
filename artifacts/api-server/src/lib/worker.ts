@@ -234,7 +234,7 @@ export async function processWorkflowJobs(
 
     const market = business.market === "IN" ? "IN" : "US";
     const businessFromNumber = business.phoneNumber?.trim() || undefined;
-    if (!hasRetellConfigForMarket(market, businessFromNumber)) {
+    if (!hasRetellConfigForMarket(market, businessFromNumber, business.retellAgentId ?? undefined)) {
       // Leave deferred; credentials missing, do not burn attempt
       await db
         .update(workflowJobsTable)
