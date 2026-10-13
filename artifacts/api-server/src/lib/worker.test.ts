@@ -465,4 +465,363 @@ describe("Workflow Worker Concurrency & Crash Idempotency", () => {
       expect(processingCount).toBe(1); // Not incremented
     });
   });
+
+  describe("CSV-Import & Queued Call Lookup and Retell Dispatch Regression", () => {
+    type TestCall = {
+      id: string;
+      businessId: string;
+      leadId: string;
+      idempotencyKey: string;
+      status: string;
+      outcome: string;
+      summary: string;
+      errorState?: string | null;
+      providerCallId?: string | null;
+    };
+
+    type TestJob = {
+      id: string;
+      businessId: string;
+      idempotencyKey: string;
+      status: string;
+      attempts: number;
+      availableAt: Date;
+      lastError?: string | null;
+    };
+
+    function simulateFindCallForJob(calls: TestCall[], job: TestJob): TestCall | undefined {
+      return calls.find(
+        (c) =>
+          c.businessId === job.businessId &&
+          (c.id === job.idempotencyKey || c.idempotencyKey === job.idempotencyKey),
+      );
+    }
+
+    function simulateProcessJob(
+      calls: TestCall[],
+      jobs: TestJob[],
+      job: TestJob,
+      opts: {
+        killSwitchEngaged?: boolean;
+        mockRetellDispatch?: () => { callId: string };
+      } = {},
+    ) {
+      const call = simulateFindCallForJob(calls, job);
+
+      // 1. Missing call check
+      if (!call) {
+        job.status = "failed";
+        job.lastError = "Associated call record not found for operation key";
+        return { status: "failed", reason: "missing_call" };
+      }
+
+      // 2. Already dispatched check
+      if (
+        Boolean(call.providerCallId) ||
+        ["in_progress", "completed", "ringing", "connected"].includes(call.status)
+      ) {
+        job.status = "completed";
+        job.lastError = null;
+        return { status: "reconciled_existing" };
+      }
+
+      // 3. Policy blocked check (allows re-evaluation if kill_switch is disengaged)
+      if (call.status === "policy_blocked") {
+        const canReEvaluate = call.errorState === "kill_switch" && !opts.killSwitchEngaged;
+        if (!canReEvaluate) {
+          job.status = "blocked";
+          job.lastError = call.summary;
+          return { status: "blocked" };
+        }
+      }
+
+      // 4. Kill switch check
+      if (opts.killSwitchEngaged) {
+        job.status = "deferred";
+        job.availableAt = new Date(Date.now() + 15 * 60 * 1000);
+        job.lastError = "LEADSPRINT_KILL_SWITCH is engaged";
+        call.status = "policy_blocked";
+        call.outcome = "Blocked — kill_switch";
+        call.summary = "LEADSPRINT_KILL_SWITCH is engaged; all outbound calling is paused.";
+        call.errorState = "kill_switch";
+        return { status: "deferred_kill_switch" };
+      }
+
+      // 5. Retell dispatch
+      job.attempts += 1;
+      try {
+        if (!opts.mockRetellDispatch) {
+          throw new Error("Retell request failed: Network timeout");
+        }
+        const live = opts.mockRetellDispatch();
+        call.providerCallId = live.callId;
+        call.status = "in_progress";
+        call.outcome = "Live call started with Retell";
+        call.summary = "Retell accepted the call and will report the final outcome by webhook.";
+        job.status = "completed";
+        job.lastError = null;
+        return { status: "dispatched", callId: live.callId };
+      } catch (err: any) {
+        const message = err.message || "Retell request failed";
+        call.status = "uncertain";
+        call.errorState = message;
+        call.outcome = "Provider state uncertain";
+        call.summary = `Retell call start failed: ${message}`;
+
+        if (job.attempts < MAX_JOB_ATTEMPTS) {
+          const backoffMinutes = Math.min(60, Math.pow(2, job.attempts));
+          job.status = "deferred";
+          job.availableAt = new Date(Date.now() + backoffMinutes * 60 * 1000);
+          job.lastError = message;
+        } else {
+          job.status = "failed";
+          job.lastError = `Max attempts (${MAX_JOB_ATTEMPTS}) exhausted. Last error: ${message}`;
+          call.status = "failed";
+          call.outcome = "Call dispatch failed";
+          call.summary = `Max dispatch attempts (${MAX_JOB_ATTEMPTS}) exhausted: ${message}`;
+          call.errorState = "max_attempts_exhausted";
+        }
+        return { status: "provider_error", error: message };
+      }
+    }
+
+    it("REGRESSION 1: CSV-import job matches call by calls.idempotencyKey and dispatches to Retell", () => {
+      const calls: TestCall[] = [
+        {
+          id: "call_64a97bf1", // Generated primary key
+          businessId: "biz_northstar",
+          leadId: "lead_swetha_01",
+          idempotencyKey: "import_call_lead_swetha_01", // Deterministic CSV key
+          status: "queued",
+          outcome: "Queued",
+          summary: "Call queued from CSV import.",
+        },
+      ];
+
+      const jobs: TestJob[] = [
+        {
+          id: "job_941a87c2",
+          businessId: "biz_northstar",
+          idempotencyKey: "import_call_lead_swetha_01",
+          status: "dispatching",
+          attempts: 0,
+          availableAt: new Date(),
+        },
+      ];
+
+      const result = simulateProcessJob(calls, jobs, jobs[0], {
+        mockRetellDispatch: () => ({ callId: "retell_call_live_777" }),
+      });
+
+      expect(result.status).toBe("dispatched");
+      expect(calls[0].status).toBe("in_progress");
+      expect(calls[0].providerCallId).toBe("retell_call_live_777");
+      expect(calls[0].outcome).toBe("Live call started with Retell");
+      expect(jobs[0].status).toBe("completed");
+      expect(jobs[0].lastError).toBeNull();
+    });
+
+    it("REGRESSION 2: Compatibility preserved for jobs where job.idempotencyKey matches calls.id", () => {
+      const calls: TestCall[] = [
+        {
+          id: "call_manual_101",
+          businessId: "biz_northstar",
+          leadId: "lead_manual_01",
+          idempotencyKey: "manual_call_manual_101",
+          status: "queued",
+          outcome: "Queued for provider",
+          summary: "Call queued for qualification.",
+        },
+      ];
+
+      const jobs: TestJob[] = [
+        {
+          id: "job_manual_201",
+          businessId: "biz_northstar",
+          idempotencyKey: "call_manual_101", // Direct call.id
+          status: "dispatching",
+          attempts: 0,
+          availableAt: new Date(),
+        },
+      ];
+
+      const result = simulateProcessJob(calls, jobs, jobs[0], {
+        mockRetellDispatch: () => ({ callId: "retell_call_manual_888" }),
+      });
+
+      expect(result.status).toBe("dispatched");
+      expect(calls[0].status).toBe("in_progress");
+      expect(calls[0].providerCallId).toBe("retell_call_manual_888");
+      expect(jobs[0].status).toBe("completed");
+    });
+
+    it("REGRESSION 3: Tenant isolation prevents cross-tenant call resolution", () => {
+      const calls: TestCall[] = [
+        {
+          id: "call_biz_b_01",
+          businessId: "biz_tenant_B",
+          leadId: "lead_b",
+          idempotencyKey: "import_call_shared_key",
+          status: "queued",
+          outcome: "Queued",
+          summary: "Tenant B call.",
+        },
+      ];
+
+      const jobTenantA: TestJob = {
+        id: "job_biz_a_01",
+        businessId: "biz_tenant_A", // Belongs to Tenant A
+        idempotencyKey: "import_call_shared_key", // Same key as Tenant B
+        status: "dispatching",
+        attempts: 0,
+        availableAt: new Date(),
+      };
+
+      const result = simulateProcessJob(calls, [jobTenantA], jobTenantA, {
+        mockRetellDispatch: () => ({ callId: "retell_call_invalid" }),
+      });
+
+      // Tenant A job cannot claim or dispatch Tenant B's call
+      expect(result.status).toBe("failed");
+      expect(result.reason).toBe("missing_call");
+      expect(jobTenantA.status).toBe("failed");
+      expect(jobTenantA.lastError).toBe("Associated call record not found for operation key");
+      expect(calls[0].status).toBe("queued"); // Untouched
+      expect(calls[0].providerCallId).toBeUndefined();
+    });
+
+    it("REGRESSION 4: Missing call marks job failed without crashing", () => {
+      const calls: TestCall[] = [];
+      const orphanJob: TestJob = {
+        id: "job_orphan_1",
+        businessId: "biz_northstar",
+        idempotencyKey: "import_call_nonexistent_lead",
+        status: "dispatching",
+        attempts: 0,
+        availableAt: new Date(),
+      };
+
+      const result = simulateProcessJob(calls, [orphanJob], orphanJob);
+
+      expect(result.status).toBe("failed");
+      expect(orphanJob.status).toBe("failed");
+      expect(orphanJob.lastError).toBe("Associated call record not found for operation key");
+    });
+
+    it("REGRESSION 5: Failed provider request marks call uncertain and defers job with backoff", () => {
+      const calls: TestCall[] = [
+        {
+          id: "call_err_01",
+          businessId: "biz_northstar",
+          leadId: "lead_err_01",
+          idempotencyKey: "import_call_lead_err_01",
+          status: "queued",
+          outcome: "Queued",
+          summary: "Queued call.",
+        },
+      ];
+
+      const job: TestJob = {
+        id: "job_err_01",
+        businessId: "biz_northstar",
+        idempotencyKey: "import_call_lead_err_01",
+        status: "dispatching",
+        attempts: 0,
+        availableAt: new Date(),
+      };
+
+      // Provider throws error
+      const result = simulateProcessJob(calls, [job], job, {
+        mockRetellDispatch: undefined, // Throws simulated error
+      });
+
+      expect(result.status).toBe("provider_error");
+      expect(calls[0].status).toBe("uncertain");
+      expect(calls[0].errorState).toBe("Retell request failed: Network timeout");
+      expect(calls[0].outcome).toBe("Provider state uncertain");
+      expect(calls[0].summary).toContain("Retell call start failed");
+      expect(job.status).toBe("deferred");
+      expect(job.attempts).toBe(1);
+    });
+
+    it("REGRESSION 6: Provider failure exhausts attempts and marks call as failed", () => {
+      const calls: TestCall[] = [
+        {
+          id: "call_exhaust_01",
+          businessId: "biz_northstar",
+          leadId: "lead_exhaust_01",
+          idempotencyKey: "import_call_lead_exhaust_01",
+          status: "queued",
+          outcome: "Queued",
+          summary: "Queued call.",
+        },
+      ];
+
+      const job: TestJob = {
+        id: "job_exhaust_01",
+        businessId: "biz_northstar",
+        idempotencyKey: "import_call_lead_exhaust_01",
+        status: "dispatching",
+        attempts: 4, // 5th attempt will exhaust MAX_JOB_ATTEMPTS
+        availableAt: new Date(),
+      };
+
+      const result = simulateProcessJob(calls, [job], job, {
+        mockRetellDispatch: undefined,
+      });
+
+      expect(result.status).toBe("provider_error");
+      expect(job.status).toBe("failed");
+      expect(job.attempts).toBe(5);
+      expect(job.lastError).toContain("Max attempts (5) exhausted");
+      expect(calls[0].status).toBe("failed");
+      expect(calls[0].errorState).toBe("max_attempts_exhausted");
+      expect(calls[0].outcome).toBe("Call dispatch failed");
+    });
+
+    it("REGRESSION 7: Kill switch marks call policy_blocked and allows re-evaluation when disengaged", () => {
+      const calls: TestCall[] = [
+        {
+          id: "call_ks_01",
+          businessId: "biz_northstar",
+          leadId: "lead_ks_01",
+          idempotencyKey: "import_call_lead_ks_01",
+          status: "queued",
+          outcome: "Queued",
+          summary: "Queued call.",
+        },
+      ];
+
+      const job: TestJob = {
+        id: "job_ks_01",
+        businessId: "biz_northstar",
+        idempotencyKey: "import_call_lead_ks_01",
+        status: "dispatching",
+        attempts: 0,
+        availableAt: new Date(),
+      };
+
+      // 1. Process while kill switch is engaged
+      const ksResult = simulateProcessJob(calls, [job], job, {
+        killSwitchEngaged: true,
+      });
+
+      expect(ksResult.status).toBe("deferred_kill_switch");
+      expect(job.status).toBe("deferred");
+      expect(calls[0].status).toBe("policy_blocked");
+      expect(calls[0].outcome).toBe("Blocked — kill_switch");
+      expect(calls[0].errorState).toBe("kill_switch");
+
+      // 2. Kill switch is disengaged: deferred job re-runs and proceeds to dispatch
+      const resumeResult = simulateProcessJob(calls, [job], job, {
+        killSwitchEngaged: false,
+        mockRetellDispatch: () => ({ callId: "retell_call_after_ks" }),
+      });
+
+      expect(resumeResult.status).toBe("dispatched");
+      expect(calls[0].status).toBe("in_progress");
+      expect(calls[0].providerCallId).toBe("retell_call_after_ks");
+      expect(job.status).toBe("completed");
+    });
+  });
 });

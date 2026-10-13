@@ -90,6 +90,18 @@ async function parseProviderResponse<T>(
   return parsed as T;
 }
 
+export function isPlaceholderAgentId(agentId?: string | null): boolean {
+  if (!agentId) return true;
+  const trimmed = agentId.trim();
+  return trimmed === "retell_demo_agent" || trimmed.toLowerCase() === "demo_agent";
+}
+
+export function isPlaceholderPhoneNumber(phone?: string | null): boolean {
+  if (!phone) return true;
+  const trimmed = phone.trim();
+  return trimmed === "+1 (212) 555-0148" || trimmed === "+12125550148";
+}
+
 export async function startRetellCall(input: {
   toNumber: string;
   market: "US" | "IN";
@@ -102,8 +114,14 @@ export async function startRetellCall(input: {
     input.market === "IN"
       ? config.fromNumberIN ?? config.fromNumber
       : config.fromNumberUS ?? config.fromNumber;
-  const fromNumber = input.fromNumber?.trim() || fallbackFrom;
-  const agentId = input.agentId?.trim() || config.agentId;
+  const rawFrom = input.fromNumber?.trim();
+  const fromNumber =
+    rawFrom && !isPlaceholderPhoneNumber(rawFrom) ? rawFrom : fallbackFrom;
+  const rawAgentId = input.agentId?.trim();
+  const agentId =
+    rawAgentId && !isPlaceholderAgentId(rawAgentId)
+      ? rawAgentId
+      : config.agentId;
   const values = requireValues("Retell", {
     apiKey: config.apiKey,
     agentId,
@@ -142,8 +160,14 @@ export function hasRetellConfigForMarket(
       : market === "US"
         ? config.fromNumberUS ?? config.fromNumber
         : config.fromNumberUS ?? config.fromNumberIN ?? config.fromNumber;
-  const fromNumber = fromNumberOverride?.trim() || fallbackFrom;
-  const agentId = agentIdOverride?.trim() || config.agentId;
+  const rawFrom = fromNumberOverride?.trim();
+  const fromNumber =
+    rawFrom && !isPlaceholderPhoneNumber(rawFrom) ? rawFrom : fallbackFrom;
+  const rawAgentId = agentIdOverride?.trim();
+  const agentId =
+    rawAgentId && !isPlaceholderAgentId(rawAgentId)
+      ? rawAgentId
+      : config.agentId;
   return Boolean(config.apiKey && agentId && fromNumber);
 }
 

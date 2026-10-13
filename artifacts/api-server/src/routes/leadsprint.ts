@@ -107,7 +107,7 @@ export async function ensureSeedData(): Promise<void> {
       name: "Northstar Realty",
       market: "US",
       timezone: "America/New_York",
-      phoneNumber: "+1 (212) 555-0148",
+      phoneNumber: process.env["RETELL_FROM_NUMBER"] || "+1 (212) 555-0148",
       transferNumber: "+1 (212) 555-0199",
       projectName: "Northstar Realty — Operator Console",
       servicesOrPropertyTypes: ["Condos", "Townhomes", "Single-family homes"],
@@ -115,7 +115,7 @@ export async function ensureSeedData(): Promise<void> {
       qualificationQuestions: ["What area are you looking in?", "What is your target budget?", "When are you hoping to move?", "Would you like to schedule a showing?"],
       escalationRules: "Do not answer legal, lending, appraisal, fair-housing, or availability questions outside approved information. Transfer or take a message.",
       calEventTypeId: "cal_demo_showing",
-      retellAgentId: "retell_demo_agent",
+      retellAgentId: process.env["RETELL_AGENT_ID"] || "retell_demo_agent",
       includedVoiceMinutes: 300,
     });
   }

@@ -101,6 +101,21 @@ describe("Phase 3 Milestone 1 — Multi-Tenant Provider Binding & Usage Enforcem
       process.env["RETELL_AGENT_ID"] = "global_agent";
       expect(hasRetellConfigForMarket("US", undefined, "tenant_agent")).toBe(true);
     });
+
+    it("hasRetellConfigForMarket falls back to global settings when tenant values are demo placeholders", () => {
+      process.env["RETELL_API_KEY"] = "test_key";
+      process.env["RETELL_AGENT_ID"] = "agent_real_global_123";
+      process.env["RETELL_FROM_NUMBER"] = "+19804856142";
+
+      // Tenant agent is placeholder: falls back to global agent
+      expect(hasRetellConfigForMarket("US", undefined, "retell_demo_agent")).toBe(true);
+
+      // Tenant phone is placeholder: falls back to global from_number
+      expect(hasRetellConfigForMarket("US", "+1 (212) 555-0148", undefined)).toBe(true);
+
+      // Both tenant values are placeholders: falls back to global values
+      expect(hasRetellConfigForMarket("US", "+1 (212) 555-0148", "retell_demo_agent")).toBe(true);
+    });
   });
 
   describe("B. Cal.com Tenant Event Type Routing", () => {

@@ -135,13 +135,17 @@ export async function processWorkflowJobs(
 
   for (const job of jobs) {
     // 3. Look up associated call record using durable operation key (job.idempotencyKey)
+    // Matches by callsTable.idempotencyKey (used by CSV import and webhooks) or callsTable.id (used by manual calls)
     const [call] = await db
       .select()
       .from(callsTable)
       .where(
         and(
-          eq(callsTable.id, job.idempotencyKey),
           eq(callsTable.businessId, job.businessId),
+          or(
+            eq(callsTable.id, job.idempotencyKey),
+            eq(callsTable.idempotencyKey, job.idempotencyKey),
+          ),
         ),
       )
       .limit(1);
@@ -182,18 +186,22 @@ export async function processWorkflowJobs(
     }
 
     if (call.status === "policy_blocked") {
-      await db
-        .update(workflowJobsTable)
-        .set({
-          status: "blocked",
-          lockedAt: null,
-          lockedBy: null,
-          leaseExpiresAt: null,
-          lastError: call.summary,
-        })
-        .where(eq(workflowJobsTable.id, job.id));
-      blocked += 1;
-      continue;
+      const canReEvaluate =
+        call.errorState === "kill_switch" && !isKillSwitchEngaged();
+      if (!canReEvaluate) {
+        await db
+          .update(workflowJobsTable)
+          .set({
+            status: "blocked",
+            lockedAt: null,
+            lockedBy: null,
+            leaseExpiresAt: null,
+            lastError: call.summary,
+          })
+          .where(eq(workflowJobsTable.id, job.id));
+        blocked += 1;
+        continue;
+      }
     }
 
     if (call.status === "cancelled") {
@@ -228,6 +236,20 @@ export async function processWorkflowJobs(
           lastError: `Business tenant ${job.businessId} not found`,
         })
         .where(eq(workflowJobsTable.id, job.id));
+      await db
+        .update(callsTable)
+        .set({
+          status: "failed",
+          outcome: "Failed — business tenant not found",
+          summary: `Business tenant ${job.businessId} not found.`,
+          errorState: "business_not_found",
+        })
+        .where(
+          and(
+            eq(callsTable.id, call.id),
+            eq(callsTable.businessId, job.businessId),
+          ),
+        );
       failed += 1;
       continue;
     }
@@ -247,6 +269,18 @@ export async function processWorkflowJobs(
           lastError: "Retell provider credentials or business phone number not configured for market",
         })
         .where(eq(workflowJobsTable.id, job.id));
+      await db
+        .update(callsTable)
+        .set({
+          outcome: "Deferred (Config Pending)",
+          summary: "Deferred: Retell provider credentials or phone number not configured for market.",
+        })
+        .where(
+          and(
+            eq(callsTable.id, call.id),
+            eq(callsTable.businessId, job.businessId),
+          ),
+        );
       skippedNotConfigured += 1;
       continue;
     }
@@ -263,6 +297,20 @@ export async function processWorkflowJobs(
           lastError: "LEADSPRINT_KILL_SWITCH is engaged",
         })
         .where(eq(workflowJobsTable.id, job.id));
+      await db
+        .update(callsTable)
+        .set({
+          status: "policy_blocked",
+          outcome: "Blocked — kill_switch",
+          summary: "LEADSPRINT_KILL_SWITCH is engaged; all outbound calling is paused.",
+          errorState: "kill_switch",
+        })
+        .where(
+          and(
+            eq(callsTable.id, call.id),
+            eq(callsTable.businessId, job.businessId),
+          ),
+        );
       blocked += 1;
       continue;
     }
@@ -332,6 +380,18 @@ export async function processWorkflowJobs(
               lastError: decision.message,
             })
             .where(eq(workflowJobsTable.id, job.id));
+          await db
+            .update(callsTable)
+            .set({
+              outcome: "Deferred — quiet_hours",
+              summary: decision.message ?? "Deferred outside allowed calling hours.",
+            })
+            .where(
+              and(
+                eq(callsTable.id, call.id),
+                eq(callsTable.businessId, job.businessId),
+              ),
+            );
         } else {
           await db
             .update(callsTable)
@@ -482,6 +542,18 @@ export async function processWorkflowJobs(
           lastError: "Deferred: active call already in progress for this contact",
         })
         .where(eq(workflowJobsTable.id, job.id));
+      await db
+        .update(callsTable)
+        .set({
+          outcome: "Deferred — active call in progress",
+          summary: "Deferred: active call already in progress for this contact.",
+        })
+        .where(
+          and(
+            eq(callsTable.id, call.id),
+            eq(callsTable.businessId, job.businessId),
+          ),
+        );
       continue;
     }
 
@@ -548,6 +620,7 @@ export async function processWorkflowJobs(
           status: "uncertain",
           errorState: message,
           outcome: "Provider state uncertain",
+          summary: `Retell call start failed: ${message}`,
         })
         .where(
           and(

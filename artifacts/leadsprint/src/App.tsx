@@ -811,13 +811,23 @@ function CallsPage() {
                   ) : (
                     <div>
                       <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Status</p>
-                      <p className="font-medium text-amber-700 dark:text-amber-400 mt-0.5">Waiting for Retell...</p>
+                      <p className="font-medium text-amber-700 dark:text-amber-400 mt-0.5">
+                        {item.outcome && item.outcome.startsWith('Deferred')
+                          ? item.outcome
+                          : 'Waiting for Retell...'}
+                      </p>
                     </div>
                   )}
                 </div>
 
                 <div className="mt-3 flex items-center justify-between text-[11px] text-muted-foreground">
-                  <span>{item.started_at ? `Started ${formatTime(item.started_at)}` : 'Initiating...'}</span>
+                  <span>
+                    {item.started_at
+                      ? `Started ${formatTime(item.started_at)}`
+                      : item.outcome && item.outcome.startsWith('Deferred')
+                        ? item.outcome
+                        : 'Initiating...'}
+                  </span>
                   <span className="text-[hsl(var(--accent))] font-medium">Open details →</span>
                 </div>
               </div>
