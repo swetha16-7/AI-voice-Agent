@@ -77,6 +77,7 @@ import {
   calculateElapsedSeconds,
   getCallStatusLabel,
 } from '@/lib/call-helpers';
+import { parseAndValidateLeadCsv } from '@/lib/csv-parser';
 
 const queryClient = new QueryClient();
 
@@ -487,30 +488,110 @@ function LeadsPage() {
   const [score, setScore] = useState('all');
   const [selected, setSelected] = useState<string | null>(null);
   const [showImport, setShowImport] = useState(false);
+  const [importStatus, setImportStatus] = useState<{
+    type: 'success' | 'warning' | 'error';
+    message: string;
+  } | null>(null);
   const importLeads = useImportLeads();
   const params = useMemo(() => ({ ...(search ? { search } : {}), ...(status !== 'all' ? { status: status as any } : {}), ...(score !== 'all' ? { score: score as any } : {}) }), [search, status, score]);
   const leads = useGetLeads(params);
   const startCall = useStartCall();
   const queryClient = useQueryClient();
+
+  const handleOpenImport = () => {
+    setImportStatus(null);
+    setShowImport(true);
+  };
+
+  const handleCloseImport = () => {
+    setShowImport(false);
+    setImportStatus(null);
+  };
+
   const handleImport = (event: any) => {
     const file = event.target.files?.[0] as File | undefined;
+    // Reset file input immediately so re-selecting the exact same file fires onChange again
+    event.target.value = '';
     if (!file) return;
+
+    setImportStatus(null);
+
     const reader = new FileReader();
-    reader.onload = () => {
-      const lines = String(reader.result || '').trim().split(/\r?\n/);
-      const [header, ...rows] = lines;
-      const keys = header.split(',').map((key) => key.trim().toLowerCase());
-      const parsed = rows.filter(Boolean).map((line) => { const values = line.split(',').map((value) => value.trim()); return keys.reduce((record: any, key, index) => { record[key] = values[index] || ''; return record; }, {}); });
-      importLeads.mutate({ data: { rows: parsed as any } }, { onSuccess: () => { setShowImport(false); queryClient.invalidateQueries({ queryKey: getGetLeadsQueryKey() }); } });
+    reader.onerror = () => {
+      setImportStatus({
+        type: 'error',
+        message: 'Failed to read the selected file. Please verify file permissions and try again.',
+      });
     };
+
+    reader.onload = () => {
+      try {
+        const text = String(reader.result || '');
+        const parseResult = parseAndValidateLeadCsv(text);
+        if (!parseResult.success) {
+          setImportStatus({
+            type: 'error',
+            message: parseResult.error,
+          });
+          return;
+        }
+
+        importLeads.mutate(
+          { data: { rows: parseResult.rows as any } },
+          {
+            onSuccess: (result) => {
+              // Always invalidate leads query so any newly inserted leads become visible
+              queryClient.invalidateQueries({ queryKey: getGetLeadsQueryKey() });
+
+              if (result.imported > 0) {
+                const skippedText = result.skipped > 0 ? ` (${result.skipped} row(s) skipped)` : '';
+                setImportStatus({
+                  type: 'success',
+                  message: `Successfully imported ${result.imported} lead(s)${skippedText}.`,
+                });
+                setTimeout(() => {
+                  setShowImport(false);
+                  setImportStatus(null);
+                }, 1500);
+              } else {
+                setImportStatus({
+                  type: 'warning',
+                  message: `0 leads imported (${result.skipped} row(s) skipped). Rows may have been skipped due to invalid phone numbers or duplicate contacts.`,
+                });
+              }
+            },
+            onError: (err: any) => {
+              const rawMessage =
+                err?.data?.error || err?.data?.message || err?.message;
+              const safeMessage =
+                typeof rawMessage === 'string'
+                  ? rawMessage.slice(0, 300)
+                  : 'Import failed. Check required columns and values.';
+              setImportStatus({
+                type: 'error',
+                message: safeMessage,
+              });
+            },
+          }
+        );
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : 'Unknown parsing error';
+        setImportStatus({
+          type: 'error',
+          message: `CSV processing error: ${message}`,
+        });
+      }
+    };
+
     reader.readAsText(file);
   };
+
   return <div className="animate-rise-in space-y-5">
-    <div className="flex flex-col justify-between gap-4 lg:flex-row lg:items-end"><div><p className="text-sm text-muted-foreground">A lead is a conversation waiting for context.</p><div className="mt-3 flex items-center gap-2 text-xs text-muted-foreground"><span className="font-mono text-foreground">{leads.data?.length ?? '—'}</span> visible leads <span className="text-border">/</span> sorted by latest signal</div></div><div className="flex gap-2"><Button onClick={() => setShowImport(true)} data-testid="button-open-import"><Upload size={15} />Import CSV</Button><Link href="/workspace/leads" data-testid="link-refresh-leads" className="inline-flex items-center gap-2 rounded-lg border border-border bg-[hsl(var(--card))] px-3 py-2 text-sm font-semibold hover:bg-[hsl(var(--muted))]"><RefreshCw size={15} />Refresh</Link></div></div>
+    <div className="flex flex-col justify-between gap-4 lg:flex-row lg:items-end"><div><p className="text-sm text-muted-foreground">A lead is a conversation waiting for context.</p><div className="mt-3 flex items-center gap-2 text-xs text-muted-foreground"><span className="font-mono text-foreground">{leads.data?.length ?? '—'}</span> visible leads <span className="text-border">/</span> sorted by latest signal</div></div><div className="flex gap-2"><Button onClick={handleOpenImport} data-testid="button-open-import"><Upload size={15} />Import CSV</Button><button type="button" onClick={() => leads.refetch()} disabled={leads.isFetching} data-testid="link-refresh-leads" className="inline-flex items-center gap-2 rounded-lg border border-border bg-[hsl(var(--card))] px-3 py-2 text-sm font-semibold hover:bg-[hsl(var(--muted))] disabled:opacity-60 cursor-pointer"><RefreshCw size={15} className={leads.isFetching ? 'animate-spin' : ''} />Refresh</button></div></div>
     <div className="flex flex-col gap-3 rounded-xl border border-border bg-[hsl(var(--card))] p-3 md:flex-row"><div className="relative min-w-0 flex-1"><Search className="absolute left-3 top-2.5 text-muted-foreground" size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search name, phone, project…" className="w-full rounded-lg border border-input bg-background py-2 pl-9 pr-3 text-sm outline-none focus:border-[hsl(var(--accent))]" data-testid="input-search-leads" /></div><div className="flex gap-2"><select value={status} onChange={(event) => setStatus(event.target.value)} className="rounded-lg border border-input bg-background px-3 py-2 text-sm" data-testid="select-lead-status"><option value="all">All statuses</option><option value="new">New</option><option value="contacted">Contacted</option><option value="qualified">Qualified</option><option value="booked">Booked</option><option value="suppressed">Suppressed</option></select><select value={score} onChange={(event) => setScore(event.target.value)} className="rounded-lg border border-input bg-background px-3 py-2 text-sm" data-testid="select-lead-score"><option value="all">All scores</option><option value="hot">Hot</option><option value="warm">Warm</option><option value="cold">Cold</option></select><Button variant="quiet" className="px-2" data-testid="button-filter-leads"><Filter size={16} /></Button></div></div>
     {leads.isLoading ? <div className="space-y-2">{[1, 2, 3, 4, 5].map((n) => <Skeleton key={n} className="h-20" />)}</div> : leads.isError ? <ErrorState retry={() => leads.refetch()} /> : !leads.data?.length ? <EmptyState icon={UsersRound} title="No leads match that view" description="Try clearing a filter or import a normalized CSV to start the desk." action={<Button onClick={() => { setSearch(''); setStatus('all'); setScore('all'); }} data-testid="button-clear-lead-filters">Clear filters</Button>} /> : <div className="overflow-hidden rounded-xl border border-border bg-[hsl(var(--card))]"><div className="hidden grid-cols-[minmax(220px,1.3fr)_1fr_1fr_1fr_120px] gap-4 border-b border-border bg-[hsl(var(--muted)/.55)] px-5 py-3 text-[10px] font-bold uppercase tracking-[.14em] text-muted-foreground md:grid"><span>Lead</span><span>Intent</span><span>Need</span><span>Next action</span><span /></div><div className="divide-y divide-border">{leads.data.map((lead) => <div key={lead.id} className="grid gap-3 px-4 py-4 transition hover:bg-[hsl(var(--muted)/.32)] md:grid-cols-[minmax(220px,1.3fr)_1fr_1fr_1fr_120px] md:items-center md:gap-4 md:px-5" data-testid={`row-lead-${lead.id}`}><button className="flex min-w-0 items-center gap-3 text-left" onClick={() => setSelected(lead.id)} data-testid={`button-open-lead-${lead.id}`}><span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[hsl(var(--secondary)/.35)] font-mono text-[11px] font-bold text-[hsl(var(--primary))]">{initials(lead.name)}</span><span className="min-w-0"><span className="block truncate text-sm font-bold">{lead.name}</span><span className="mt-0.5 block truncate text-xs text-muted-foreground">{lead.phone} · {lead.project}</span></span></button><div className="flex items-center gap-2"><Badge className={scoreTone(lead.score)}>{lead.score}</Badge><span className="font-mono text-xs text-muted-foreground">{lead.intent_score}/100</span></div><div><p className="text-sm font-medium">{lead.property_type}</p><p className="mt-0.5 text-xs text-muted-foreground">{lead.budget_label} · {lead.timeline}</p></div><div><p className="text-sm font-medium">{lead.next_action || 'Review lead'}</p><p className="mt-0.5 text-xs text-muted-foreground">{relativeTime(lead.last_call || lead.created_at)}</p></div><div className="flex items-center justify-end gap-1"><button onClick={() => startCall.mutate({ data: { lead_id: lead.id } }, { onSuccess: () => queryClient.invalidateQueries({ queryKey: getGetCallsQueryKey() }) })} disabled={lead.suppressed || startCall.isPending} className="rounded-lg p-2 text-[hsl(var(--accent))] hover:bg-[hsl(var(--accent)/.1)] disabled:opacity-40" title="Call now" data-testid={`button-call-row-${lead.id}`}><Phone size={16} /></button><button onClick={() => setSelected(lead.id)} className="rounded-lg p-2 text-muted-foreground hover:bg-[hsl(var(--muted))]" title="Open details" data-testid={`button-details-row-${lead.id}`}><ChevronRight size={16} /></button></div></div>)}</div></div>}
     {selected && <LeadDetail id={selected} onClose={() => setSelected(null)} />}
-    {showImport && <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#102632]/35 p-5"><div className="w-full max-w-[440px] rounded-2xl border border-border bg-[hsl(var(--card))] p-6 shadow-2xl"><div className="flex items-start justify-between"><div><h2 className="text-lg font-bold">Import lead rows</h2><p className="mt-1 text-sm text-muted-foreground">Use a CSV with name and phone columns.</p></div><button onClick={() => setShowImport(false)} data-testid="button-close-import"><X size={18} /></button></div><label className="mt-6 flex cursor-pointer flex-col items-center rounded-xl border border-dashed border-[hsl(var(--accent)/.5)] bg-[hsl(var(--accent)/.04)] p-8 text-center hover:bg-[hsl(var(--accent)/.08)]"><Upload className="text-[hsl(var(--accent))]" size={22} /><span className="mt-3 text-sm font-semibold">Choose CSV file</span><span className="mt-1 text-xs text-muted-foreground">Rows are normalized before import.</span><input type="file" accept=".csv,text/csv" onChange={handleImport} className="hidden" data-testid="input-import-csv" /></label>{importLeads.isPending && <p className="mt-3 text-xs text-muted-foreground">Importing rows…</p>}{importLeads.isError && <p className="mt-3 text-xs text-[hsl(var(--destructive))]">Import failed. Check required columns.</p>}<Button variant="quiet" className="mt-5 w-full" onClick={() => setShowImport(false)} data-testid="button-cancel-import">Cancel</Button></div></div>}
+    {showImport && <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#102632]/35 p-5"><div className="w-full max-w-[440px] rounded-2xl border border-border bg-[hsl(var(--card))] p-6 shadow-2xl"><div className="flex items-start justify-between"><div><h2 className="text-lg font-bold">Import lead rows</h2><p className="mt-1 text-sm text-muted-foreground">Use a CSV with name and phone columns.</p></div><button onClick={handleCloseImport} data-testid="button-close-import"><X size={18} /></button></div><label className="mt-6 flex cursor-pointer flex-col items-center rounded-xl border border-dashed border-[hsl(var(--accent)/.5)] bg-[hsl(var(--accent)/.04)] p-8 text-center hover:bg-[hsl(var(--accent)/.08)]"><Upload className="text-[hsl(var(--accent))]" size={22} /><span className="mt-3 text-sm font-semibold">Choose CSV file</span><span className="mt-1 text-xs text-muted-foreground">Rows are normalized before import.</span><input type="file" accept=".csv,text/csv" onChange={handleImport} className="hidden" data-testid="input-import-csv" /></label>{importLeads.isPending && <p className="mt-3 text-xs text-muted-foreground flex items-center gap-1.5"><Loader2 size={13} className="animate-spin" />Importing rows…</p>}{importStatus && <div className={`mt-3 rounded-lg p-3 text-xs font-medium ${importStatus.type === 'success' ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20' : importStatus.type === 'warning' ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20' : 'bg-[hsl(var(--destructive)/.1)] text-[hsl(var(--destructive))] border border-[hsl(var(--destructive)/.2)]'}`} data-testid="import-status-message">{importStatus.message}</div>}<Button variant="quiet" className="mt-5 w-full" onClick={handleCloseImport} data-testid="button-cancel-import">Cancel</Button></div></div>}
   </div>;
 }
 
