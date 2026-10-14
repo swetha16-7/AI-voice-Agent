@@ -17,6 +17,7 @@ let businessesStore: any[] = [];
 let contactsStore: any[] = [];
 let leadsStore: any[] = [];
 let appointmentsStore: any[] = [];
+let usageStore: any[] = [];
 
 function extractVals(obj: any): any[] {
   const values: any[] = [];
@@ -90,6 +91,9 @@ vi.mock("@workspace/db", async (importOriginal) => {
               result = contactsStore.filter((c) => vals.includes(c.id));
             } else if (table === actual.leadsTable) {
               result = leadsStore.filter((l) => vals.includes(l.id));
+            } else if (table === actual.usageTable) {
+              const bizId = vals.find((v) => typeof v === "string" && v.startsWith("business_"));
+              result = usageStore.filter((u) => !bizId || u.businessId === bizId);
             }
 
             const promise = Promise.resolve(result);
@@ -111,27 +115,27 @@ vi.mock("@workspace/db", async (importOriginal) => {
             updatedAt: new Date(),
             ...it,
           }));
-          return {
-            returning: () => {
-              if (table === actual.agentsTable) agentsStore.push(...items);
-              else if (table === actual.messagesTable) messagesStore.push(...items);
-              else if (table === actual.callsTable) callsStore.push(...items);
-              else if (table === actual.contactsTable) contactsStore.push(...items);
-              else if (table === actual.leadsTable) leadsStore.push(...items);
-              else if (table === actual.appointmentsTable) appointmentsStore.push(...items);
-              return Promise.resolve(items);
-            },
-            onConflictDoNothing: () => ({
-              returning: () => {
-                if (table === actual.agentsTable) agentsStore.push(...items);
-                else if (table === actual.messagesTable) messagesStore.push(...items);
-                else if (table === actual.callsTable) callsStore.push(...items);
-                else if (table === actual.contactsTable) contactsStore.push(...items);
-                else if (table === actual.leadsTable) leadsStore.push(...items);
-                return Promise.resolve(items);
-              },
-            }),
+          const pushItems = () => {
+            if (table === actual.agentsTable) agentsStore.push(...items);
+            else if (table === actual.messagesTable) messagesStore.push(...items);
+            else if (table === actual.callsTable) callsStore.push(...items);
+            else if (table === actual.contactsTable) contactsStore.push(...items);
+            else if (table === actual.leadsTable) leadsStore.push(...items);
+            else if (table === actual.appointmentsTable) appointmentsStore.push(...items);
+            else if (table === actual.usageTable) usageStore.push(...items);
           };
+          const p = Promise.resolve(items);
+          (p as any).returning = () => {
+            pushItems();
+            return Promise.resolve(items);
+          };
+          (p as any).onConflictDoNothing = () => {
+            pushItems();
+            const cp = Promise.resolve(items);
+            (cp as any).returning = () => Promise.resolve(items);
+            return cp;
+          };
+          return p;
         },
       }),
       update: (table: any) => ({
@@ -252,6 +256,18 @@ describe("LeadSprint AI Receptionist Platform — Step 1 & 2 Tests", () => {
     contactsStore = [];
     leadsStore = [];
     appointmentsStore = [];
+    usageStore = [
+      {
+        id: "usage_business_demo_active",
+        businessId: "business_demo",
+        periodStart: new Date(Date.UTC(2020, 0, 1)),
+        periodEnd: new Date(Date.UTC(2030, 11, 31)),
+        voiceMinutes: "0",
+        smsCount: 0,
+        bookingCount: 0,
+        estimatedCost: "0",
+      },
+    ];
     businessesStore = [
       {
         id: "business_demo",
@@ -438,6 +454,120 @@ describe("LeadSprint AI Receptionist Platform — Step 1 & 2 Tests", () => {
       expect(testRes.body.outcome).toContain("kill_switch / safe test mode");
       expect(testRes.body.call_type).toBe("test");
       expect(testRes.body.agent_id).toBe(agentId);
+    });
+
+    it("POST /api/calls/start returns 404 when requested agent does not exist in the workspace or belongs to another business", async () => {
+      // Nonexistent agent
+      const resNonexistent = await supertest(app)
+        .post("/api/calls/start")
+        .send({
+          phone: "+12125550199",
+          customer_name: "Test Caller",
+          agent_id: "agent_nonexistent_999",
+        });
+
+      expect(resNonexistent.status).toBe(404);
+      expect(resNonexistent.body.error).toContain("Selected agent was not found in this workspace");
+
+      // Agent belonging to another business / workspace
+      agentsStore.push({
+        id: "agent_other_biz",
+        businessId: "other_workspace_123",
+        name: "Other Business Agent",
+        voiceId: "retell-Cimo",
+        language: "en-US",
+        isActive: true,
+        syncStatus: "synced",
+        retellAgentId: "retell_agent_other",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+
+      const resOtherBiz = await supertest(app)
+        .post("/api/calls/start")
+        .send({
+          phone: "+12125550199",
+          customer_name: "Test Caller",
+          agent_id: "agent_other_biz",
+        });
+
+      expect(resOtherBiz.status).toBe(404);
+      expect(resOtherBiz.body.error).toContain("Selected agent was not found in this workspace");
+    });
+
+    it("POST /api/calls/start returns 400 when requested agent is unsynced or missing retellAgentId", async () => {
+      const unsyncedId = "agent_unsynced_sara";
+      agentsStore.push({
+        id: unsyncedId,
+        businessId: "business_demo",
+        name: "Unsynced Sara",
+        voiceId: "retell-Cimo",
+        language: "en-US",
+        isActive: true,
+        syncStatus: "failed",
+        retellAgentId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+
+      const res = await supertest(app)
+        .post("/api/calls/start")
+        .send({
+          phone: "+12125550199",
+          customer_name: "Test Caller",
+          agent_id: unsyncedId,
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('Selected agent "Unsynced Sara" is not synced with Retell');
+    });
+
+    it("POST /api/calls/start maps synced agent's retellAgentId for Retell API request", async () => {
+      process.env["RETELL_API_KEY"] = "retell_test_key_live";
+      process.env["LEADSPRINT_KILL_SWITCH"] = "false";
+      businessesStore[0].callingPaused = false;
+      businessesStore[0].quietHours = "00:00–01:00";
+
+      const syncedAgentId = "agent_synced_sara";
+      const realRetellAgentId = "retell_agent_sara_real_999";
+      agentsStore.push({
+        id: syncedAgentId,
+        businessId: "business_demo",
+        name: "Sara Live",
+        voiceId: "retell-Cimo",
+        language: "en-US",
+        isActive: true,
+        syncStatus: "synced",
+        retellAgentId: realRetellAgentId,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+
+      const fetchMock = vi.fn().mockResolvedValueOnce({
+        ok: true,
+        text: async () => JSON.stringify({ call_id: "call_retell_dispatched_123" }),
+      });
+      global.fetch = fetchMock;
+
+      const res = await supertest(app)
+        .post("/api/calls/start")
+        .send({
+          phone: "+12125550199",
+          customer_name: "Test Caller",
+          agent_id: syncedAgentId,
+        });
+
+      expect(res.status).toBe(201);
+      expect(res.body.status).toBe("in_progress");
+      expect(res.body.agent_id).toBe(syncedAgentId);
+      expect(res.body.agent_name).toBe("Sara Live");
+
+      // Verify Retell API was called with the actual retellAgentId, NOT the internal database ID
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0][0]).toBe("https://api.retellai.com/v2/create-phone-call");
+      const retellPayload = JSON.parse(fetchMock.mock.calls[0][1].body);
+      expect(retellPayload.agent_id).toBe(realRetellAgentId);
+      expect(retellPayload.to_number).toBe("+12125550199");
     });
   });
 

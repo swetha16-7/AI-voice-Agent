@@ -657,12 +657,26 @@ router.post("/calls/start", async (req, res): Promise<void> => {
 
   let agentId: string | null = null;
   let agentName: string | null = null;
-  if (body.data.agent_id) {
-    const [agent] = await db.select().from(agentsTable).where(and(eq(agentsTable.id, body.data.agent_id), eq(agentsTable.businessId, BUSINESS_ID)));
-    if (agent) {
-      agentId = agent.id;
-      agentName = agent.name;
+  let providerAgentId: string | null = null;
+  const requestedAgentId = body.data.agent_id?.trim();
+  if (requestedAgentId) {
+    const [agent] = await db
+      .select()
+      .from(agentsTable)
+      .where(and(eq(agentsTable.id, requestedAgentId), eq(agentsTable.businessId, BUSINESS_ID)));
+    if (!agent) {
+      res.status(404).json({ error: "Selected agent was not found in this workspace" });
+      return;
     }
+    if (!agent.retellAgentId || agent.syncStatus !== "synced") {
+      res.status(400).json({
+        error: `Selected agent "${agent.name}" is not synced with Retell (status: ${agent.syncStatus || "unconfigured"}). Please sync the agent or select the default receptionist script.`,
+      });
+      return;
+    }
+    agentId = agent.id;
+    agentName = agent.name;
+    providerAgentId = agent.retellAgentId;
   }
 
   const business = await getBusiness(BUSINESS_ID);
@@ -740,7 +754,7 @@ router.post("/calls/start", async (req, res): Promise<void> => {
 
   let current = created;
   const businessFromNumber = business?.phoneNumber?.trim() || undefined;
-  const effectiveAgentId = agentId || business?.retellAgentId || undefined;
+  const effectiveAgentId = providerAgentId || business?.retellAgentId || undefined;
   const liveRetell = hasRetellConfigForMarket(business?.market === "IN" ? "IN" : "US", businessFromNumber, effectiveAgentId);
 
   if (liveRetell) {
