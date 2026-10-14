@@ -569,6 +569,103 @@ describe("LeadSprint AI Receptionist Platform — Step 1 & 2 Tests", () => {
       expect(retellPayload.agent_id).toBe(realRetellAgentId);
       expect(retellPayload.to_number).toBe("+12125550199");
     });
+
+    it("PATCH /api/agents/:id maps existing retell_agent_id directly to Boomi Solutions Receptionist without calling createRetellAgent", async () => {
+      process.env["RETELL_API_KEY"] = "retell_test_key_live";
+      const localAgentId = "agent_local_sara_to_map";
+      agentsStore.push({
+        id: localAgentId,
+        businessId: "business_demo",
+        name: "sara",
+        voiceId: "retell-Cimo",
+        language: "en-US",
+        isActive: true,
+        syncStatus: "failed",
+        retellAgentId: null,
+        retellLlmId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+
+      const boomiRetellAgentId = "agent_49f28308f661ae06a348071fff";
+      const boomiLlmId = "llm_8e55f477a6f9fdbf143767c30169";
+
+      // Mock getRetellAgent call
+      const fetchMock = vi.fn().mockResolvedValueOnce({
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            agent_id: boomiRetellAgentId,
+            agent_name: "Boomi Solutions Receptionist",
+            voice_id: "retell-Cimo",
+            language: "en-US",
+            response_engine: {
+              type: "retell-llm",
+              llm_id: boomiLlmId,
+            },
+          }),
+      });
+      global.fetch = fetchMock;
+
+      const res = await supertest(app)
+        .patch(`/api/agents/${localAgentId}`)
+        .send({
+          name: "Boomi Solutions Receptionist",
+          retell_agent_id: boomiRetellAgentId,
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.id).toBe(localAgentId);
+      expect(res.body.name).toBe("Boomi Solutions Receptionist");
+      expect(res.body.retell_agent_id).toBe(boomiRetellAgentId);
+      expect(res.body.retell_llm_id).toBe(boomiLlmId);
+      expect(res.body.sync_status).toBe("synced");
+
+      // Verify it verified the agent on Retell without creating a new agent
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0][0]).toBe(`https://api.retellai.com/get-agent/${boomiRetellAgentId}`);
+      expect(fetchMock.mock.calls.some((c) => String(c[0]).includes("create-agent"))).toBe(false);
+    });
+
+    it("POST /api/calls/start dispatches default receptionist using Boomi Solutions Receptionist when no agent is selected", async () => {
+      process.env["RETELL_API_KEY"] = "retell_test_key_live";
+      process.env["RETELL_AGENT_ID"] = "agent_49f28308f661ae06a348071fff";
+      process.env["LEADSPRINT_KILL_SWITCH"] = "false";
+      businessesStore[0].callingPaused = false;
+      businessesStore[0].quietHours = "00:00–01:00";
+      businessesStore[0].retellAgentId = "retell_demo_agent"; // database contains placeholder
+
+      const fetchMock = vi.fn().mockResolvedValueOnce({
+        ok: true,
+        text: async () => JSON.stringify({ call_id: "call_default_script_123" }),
+      });
+      global.fetch = fetchMock;
+
+      const res = await supertest(app)
+        .post("/api/calls/start")
+        .send({
+          phone: "+12125550199",
+          customer_name: "Default Caller",
+          // agent_id omitted -> Default Receptionist Script
+        });
+
+      expect(res.status).toBe(201);
+      expect(res.body.status).toBe("in_progress");
+
+      // Verify Retell API receives the active Boomi Solutions Receptionist Retell agent ID
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const retellPayload = JSON.parse(fetchMock.mock.calls[0][1].body);
+      expect(retellPayload.agent_id).toBe("agent_49f28308f661ae06a348071fff");
+    });
+
+    it("GET /api/business-settings returns Boomi Solutions Receptionist ID when database has placeholder", async () => {
+      businessesStore[0].retellAgentId = "retell_demo_agent";
+      process.env["RETELL_AGENT_ID"] = "agent_49f28308f661ae06a348071fff";
+
+      const res = await supertest(app).get("/api/business-settings");
+      expect(res.status).toBe(200);
+      expect(res.body.retell_agent_id).toBe("agent_49f28308f661ae06a348071fff");
+    });
   });
 
   describe("3. Receptionist Messages & Callback Requests", () => {

@@ -19,6 +19,7 @@ import {
 } from "@workspace/api-zod";
 import {
   createRetellAgent,
+  getRetellAgent,
   providerConfig,
   updateRetellAgent,
 } from "../lib/providers";
@@ -91,7 +92,27 @@ router.post("/agents", async (req, res): Promise<void> => {
   let syncStatus: "synced" | "pending" | "failed" | "unconfigured" = config.apiKey ? "pending" : "unconfigured";
   let lastSyncedAt: Date | null = null;
 
-  if (config.apiKey) {
+  const explicitRetellAgentId = body.retell_agent_id?.trim();
+  if (explicitRetellAgentId) {
+    retellAgentId = explicitRetellAgentId;
+    if (config.apiKey) {
+      try {
+        const retellAgent = (await getRetellAgent(explicitRetellAgentId)) as {
+          agent_name?: string;
+          response_engine?: { llm_id?: string };
+        };
+        retellLlmId = retellAgent?.response_engine?.llm_id ?? null;
+        syncStatus = "synced";
+        lastSyncedAt = new Date();
+      } catch (err) {
+        logger.error({ err, retellAgentId: explicitRetellAgentId }, "Failed to verify existing Retell agent");
+        syncStatus = "failed";
+      }
+    } else {
+      syncStatus = "synced";
+      lastSyncedAt = new Date();
+    }
+  } else if (config.apiKey) {
     try {
       const syncResult = await createRetellAgent({
         name: body.name,
@@ -182,7 +203,27 @@ router.patch("/agents/:id", async (req, res): Promise<void> => {
   let retellAgentId = existing.retellAgentId;
   let retellLlmId = existing.retellLlmId;
 
-  if (config.apiKey) {
+  const explicitRetellAgentId = body.data.retell_agent_id?.trim();
+  if (explicitRetellAgentId) {
+    retellAgentId = explicitRetellAgentId;
+    if (config.apiKey) {
+      try {
+        const retellAgent = (await getRetellAgent(explicitRetellAgentId)) as {
+          agent_name?: string;
+          response_engine?: { llm_id?: string };
+        };
+        retellLlmId = retellAgent?.response_engine?.llm_id ?? retellLlmId;
+        syncStatus = "synced";
+        lastSyncedAt = new Date();
+      } catch (err) {
+        logger.error({ err, retellAgentId: explicitRetellAgentId }, "Failed to verify existing Retell agent");
+        syncStatus = "failed";
+      }
+    } else {
+      syncStatus = "synced";
+      lastSyncedAt = new Date();
+    }
+  } else if (config.apiKey) {
     if (existing.retellAgentId) {
       try {
         await updateRetellAgent({

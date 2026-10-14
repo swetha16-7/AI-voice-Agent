@@ -993,6 +993,7 @@ components:
         greeting: { type: string }
         prompt: { type: string }
         is_active: { type: boolean }
+        retell_agent_id: { type: string }
       required: [name, voice_id]
     UpdateAgentInput:
       type: object
@@ -1003,6 +1004,7 @@ components:
         greeting: { type: string }
         prompt: { type: string }
         is_active: { type: boolean }
+        retell_agent_id: { type: string }
     TestAgentInput:
       type: object
       properties:

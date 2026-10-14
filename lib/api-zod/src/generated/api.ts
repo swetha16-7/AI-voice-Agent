@@ -725,7 +725,8 @@ export const CreateAgentBody = zod.object({
   "language": zod.string().optional(),
   "greeting": zod.string().optional(),
   "prompt": zod.string().optional(),
-  "is_active": zod.boolean().optional()
+  "is_active": zod.boolean().optional(),
+  "retell_agent_id": zod.string().optional()
 })
 
 export const CreateAgentResponse = zod.object({
@@ -782,7 +783,8 @@ export const UpdateAgentBody = zod.object({
   "language": zod.string().optional(),
   "greeting": zod.string().optional(),
   "prompt": zod.string().optional(),
-  "is_active": zod.boolean().optional()
+  "is_active": zod.boolean().optional(),
+  "retell_agent_id": zod.string().optional()
 })
 
 export const UpdateAgentResponse = zod.object({

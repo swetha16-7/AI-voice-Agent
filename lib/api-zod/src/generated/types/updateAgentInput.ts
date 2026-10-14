@@ -13,4 +13,5 @@ export interface UpdateAgentInput {
   greeting?: string;
   prompt?: string;
   is_active?: boolean;
+  retell_agent_id?: string;
 }

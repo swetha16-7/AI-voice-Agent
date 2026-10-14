@@ -58,6 +58,7 @@ import {
   getCalAvailability,
   hasRetellConfigForMarket,
   hasTwilioRoute,
+  isPlaceholderAgentId,
   providerConfig,
   ProviderRequestError,
   startRetellCall,
@@ -121,6 +122,11 @@ export async function ensureSeedData(): Promise<void> {
       retellAgentId: process.env["RETELL_AGENT_ID"] || "retell_demo_agent",
       includedVoiceMinutes: 300,
     });
+  } else if (process.env["RETELL_AGENT_ID"] && (!business.retellAgentId || isPlaceholderAgentId(business.retellAgentId))) {
+    await db
+      .update(businessesTable)
+      .set({ retellAgentId: process.env["RETELL_AGENT_ID"], updatedAt: new Date() })
+      .where(eq(businessesTable.id, BUSINESS_ID));
   }
 
   const [user] = await db.select().from(usersTable).where(eq(usersTable.id, USER_ID));
@@ -1091,10 +1097,13 @@ router.get("/business-settings", async (_req, res): Promise<void> => {
   const BUSINESS_ID = scopedBusinessId(req);
   const business = await getBusiness(BUSINESS_ID);
   if (!business) { res.status(503).json({ error: "Business setup is not ready" }); return; }
+  const effectiveRetellAgentId = (!business.retellAgentId || isPlaceholderAgentId(business.retellAgentId))
+    ? (providerConfig().retell.agentId || business.retellAgentId)
+    : business.retellAgentId;
   sendValidatedResponse(res, GetBusinessSettingsResponse, {
     id: business.id, name: business.name, market: business.market, timezone: business.timezone, phone_number: business.phoneNumber, transfer_number: business.transferNumber,
     recording_disclosure: business.recordingDisclosure, ai_disclosure: business.aiDisclosure, quiet_hours: business.quietHours, max_call_attempts: business.maxCallAttempts, suppression_enabled: business.suppressionEnabled, calling_paused: business.callingPaused,
-    project_name: business.projectName, services_or_property_types: business.servicesOrPropertyTypes, approved_faq: business.approvedFaq, qualification_questions: business.qualificationQuestions, escalation_rules: business.escalationRules, cal_event_type_id: business.calEventTypeId, retell_agent_id: business.retellAgentId,
+    project_name: business.projectName, services_or_property_types: business.servicesOrPropertyTypes, approved_faq: business.approvedFaq, qualification_questions: business.qualificationQuestions, escalation_rules: business.escalationRules, cal_event_type_id: business.calEventTypeId, retell_agent_id: effectiveRetellAgentId,
   });
 });
 
