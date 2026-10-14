@@ -9,8 +9,17 @@ import type { AppointmentStatus } from './appointmentStatus';
 
 export interface Appointment {
   id: string;
-  lead_id: string;
+  /** @nullable */
+  lead_id?: string | null;
   lead_name: string;
+  /** @nullable */
+  call_id?: string | null;
+  /** @nullable */
+  customer_name?: string | null;
+  /** @nullable */
+  customer_phone?: string | null;
+  /** @nullable */
+  customer_email?: string | null;
   service_or_property: string;
   start_time: string;
   end_time: string;

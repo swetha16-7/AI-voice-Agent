@@ -9,6 +9,7 @@ import {
   ArrowUpRight,
   BarChart3,
   Bell,
+  Bot,
   CalendarDays,
   Check,
   CheckCircle2,
@@ -46,6 +47,7 @@ import {
   getGetCallsQueryKey,
   getGetLeadQueryKey,
   getGetLeadsQueryKey,
+  getGetOverviewReportQueryKey,
   useBookAppointment,
   useGetAppointments,
   useGetAuthMe,
@@ -55,6 +57,7 @@ import {
   useGetCalls,
   useGetActivity,
   useGetLead,
+  useGetOverviewReport,
   useHealthCheck,
   useGetLeads,
   useGetToday,
@@ -71,6 +74,10 @@ import { Link, Redirect, Route, Router as WouterRouter, Switch, useLocation, use
 import { ErrorBoundary } from '@/components/error-boundary';
 import NotFound from '@/pages/not-found';
 import { OnboardingPage } from '@/pages/onboarding';
+import { AgentsPage } from '@/pages/agents';
+import { MessagesPage } from '@/pages/messages';
+import { MakeCallModal } from '@/components/make-call-modal';
+import { CallDrawer } from '@/components/call-drawer';
 import {
   formatDuration,
   getCallPollingInterval,
@@ -83,8 +90,10 @@ const queryClient = new QueryClient();
 
 const navItems = [
   { href: '/workspace', label: 'Today', icon: LayoutDashboard },
-  { href: '/workspace/leads', label: 'Leads', icon: UsersRound },
+  { href: '/workspace/agents', label: 'AI Agents', icon: Bot },
   { href: '/workspace/calls', label: 'Calls', icon: PhoneCall },
+  { href: '/workspace/messages', label: 'Messages', icon: MessageSquare },
+  { href: '/workspace/leads', label: 'Leads', icon: UsersRound },
   { href: '/workspace/appointments', label: 'Appointments', icon: CalendarDays },
   { href: '/workspace/reports', label: 'Reports', icon: BarChart3 },
   { href: '/workspace/business-settings', label: 'Business settings', icon: Settings2 },
@@ -93,8 +102,10 @@ const navItems = [
 
 const pageMeta: Record<string, { eyebrow: string; title: string; description: string }> = {
   '/workspace': { eyebrow: 'Operator desk', title: 'Today', description: 'The handoffs that need a human touch.' },
-  '/workspace/leads': { eyebrow: 'Pipeline', title: 'Leads', description: 'Find the next best conversation.' },
+  '/workspace/agents': { eyebrow: 'Voice intelligence', title: 'AI Agents', description: 'Configure Retell agents and verify synchronization status.' },
   '/workspace/calls': { eyebrow: 'Voice desk', title: 'Calls', description: 'A clear trail for every attempted connection.' },
+  '/workspace/messages': { eyebrow: 'Caller requests', title: 'Messages', description: 'Action voicemails, callback requests, and receptionist notes.' },
+  '/workspace/leads': { eyebrow: 'Pipeline', title: 'Leads', description: 'Find the next best conversation.' },
   '/workspace/appointments': { eyebrow: 'Calendar', title: 'Appointments', description: 'Verified meetings, ready for the team.' },
   '/workspace/reports': { eyebrow: 'Pilot pulse', title: 'Reports', description: 'A grounded view of your weekly operation.' },
   '/workspace/business-settings': { eyebrow: 'Control room', title: 'Business settings', description: 'Policy first. Then automation.' },
@@ -111,9 +122,9 @@ const DEMO_AUTH = import.meta.env.VITE_LEADSPRINT_DEMO_AUTH === 'true';
 const clerkPubKey = DEMO_AUTH
   ? ''
   : publishableKeyFromHost(
-      window.location.hostname,
-      import.meta.env.VITE_CLERK_PUBLISHABLE_KEY,
-    );
+    window.location.hostname,
+    import.meta.env.VITE_CLERK_PUBLISHABLE_KEY,
+  );
 const clerkProxyUrl = import.meta.env.VITE_CLERK_PROXY_URL;
 const basePath = import.meta.env.BASE_URL.replace(/\/$/, '');
 
@@ -158,7 +169,7 @@ function statusTone(status?: string) {
   return 'bg-[#e6e7df] text-[#59605b]';
 }
 
-function Button({ children, variant = 'secondary', className = '', ...props }: { children: ReactNode; variant?: 'primary' | 'secondary' | 'quiet' | 'danger'; className?: string; [key: string]: unknown }) {
+function Button({ children, variant = 'secondary', className = '', ...props }: { children: ReactNode; variant?: 'primary' | 'secondary' | 'quiet' | 'danger'; className?: string;[key: string]: unknown }) {
   const styles = {
     primary: 'bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))] border-[hsl(var(--primary))] hover:brightness-110',
     secondary: 'bg-[hsl(var(--card))] text-foreground border-border hover:bg-[hsl(var(--muted))]',
@@ -205,7 +216,7 @@ function useDemoSignOutAction() {
     try {
       localStorage.removeItem('leadsprint_operator_signed_in');
       localStorage.removeItem('leadsprint_operator_email');
-    } catch {}
+    } catch { }
     queryClient.clear();
   };
 }
@@ -276,8 +287,8 @@ function Shell({ children, session }: { children: ReactNode; session: any }) {
   const sessionName = !isInternalId(user?.name) ? user?.name?.trim() : undefined;
   const sessionEmail =
     user?.email &&
-    !user.email.endsWith('@clerk.local') &&
-    !user.email.startsWith('user_')
+      !user.email.endsWith('@clerk.local') &&
+      !user.email.startsWith('user_')
       ? user.email.trim()
       : undefined;
 
@@ -311,7 +322,7 @@ function Shell({ children, session }: { children: ReactNode; session: any }) {
         <div className="flex items-center gap-3 border-t border-[hsl(var(--sidebar-border))] px-2 pt-4">
           <div className="flex h-8 w-8 items-center justify-center rounded-full bg-[hsl(var(--sidebar-primary)/.18)] font-mono text-[11px] text-[hsl(var(--sidebar-primary))]">{displayInitial}</div>
           <div className="min-w-0 flex-1"><p className="truncate text-xs font-semibold">{displayName}</p><p className="truncate text-[11px] text-[hsl(var(--sidebar-foreground)/.5)]">{business?.name || 'Workspace'}</p></div>
-           <button className="text-[hsl(var(--sidebar-foreground)/.55)] hover:text-[hsl(var(--sidebar-primary))]" onClick={handleSignOut} data-testid="button-logout" title="Sign out"><LogOut size={15} /></button>
+          <button className="text-[hsl(var(--sidebar-foreground)/.55)] hover:text-[hsl(var(--sidebar-primary))]" onClick={handleSignOut} data-testid="button-logout" title="Sign out"><LogOut size={15} /></button>
         </div>
       </div>
     </aside>
@@ -691,36 +702,30 @@ function CallStatusBadge({ status }: { status?: string | null }) {
 }
 
 function CallsPage() {
+  const [, setLocation] = useLocation();
+  const [search, setSearch] = useState('');
   const [status, setStatus] = useState('all');
-  const [selected, setSelected] = useState<string | null>(null);
+  const [callType, setCallType] = useState('all');
+  const [sentiment, setSentiment] = useState('all');
+  const [selectedCallId, setSelectedCallId] = useState<string | null>(null);
+  const [showMakeCall, setShowMakeCall] = useState(false);
 
-  // Dynamic Polling: 2500ms when any active/queued call exists, 10000ms idle.
-  // refetchIntervalInBackground: true ensures polling continues even when the browser
-  // tab temporarily loses focus — user does not need to switch tabs or manually refresh.
-  const calls = useGetCalls(
-    status === 'all' ? undefined : { status: status as any },
-    {
-      query: {
-        queryKey: getGetCallsQueryKey(status === 'all' ? undefined : { status: status as any }),
-        refetchInterval: (query) => getCallPollingInterval(query.state.data as any),
-        refetchIntervalInBackground: true,
-      },
-    },
-  );
+  const queryParams = useMemo(() => {
+    const p: any = {};
+    if (status !== 'all') p.status = status;
+    if (callType !== 'all') p.call_type = callType;
+    if (sentiment !== 'all') p.sentiment = sentiment;
+    if (search.trim()) p.search = search.trim();
+    return Object.keys(p).length > 0 ? p : undefined;
+  }, [status, callType, sentiment, search]);
 
-  const call = useGetCall(selected || '', {
+  const calls = useGetCalls(queryParams, {
     query: {
-      enabled: !!selected,
-      queryKey: getGetCallQueryKey(selected || ''),
-      refetchInterval: (query) => {
-        const data = query.state.data as any;
-        return data?.status === 'in_progress' || data?.status === 'queued' ? 2500 : 10000;
-      },
+      queryKey: getGetCallsQueryKey(queryParams),
+      refetchInterval: (query) => getCallPollingInterval(query.state.data as any),
       refetchIntervalInBackground: true,
     },
   });
-
-  const startCall = useStartCall();
 
   const activeCalls = useMemo(() => {
     return (calls.data || []).filter(
@@ -733,24 +738,108 @@ function CallsPage() {
 
   return (
     <div className="animate-rise-in space-y-6">
-      <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-end">
+      {/* Top Header & Actions */}
+      <div className="flex flex-col justify-between gap-4 lg:flex-row lg:items-end">
         <div>
-          <p className="text-sm text-muted-foreground">Provider events, operator decisions, and the human-readable result.</p>
+          <p className="text-sm text-muted-foreground">
+            Complete call history, caller sentiments, voice recordings, and AI receptionist transcripts.
+          </p>
+          <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
+            <span className="font-mono text-foreground font-semibold">{calls.data?.length ?? 0}</span> calls logged
+            <span className="text-border">/</span>
+            <span>Real-time polling active</span>
+          </div>
         </div>
-        <select
-          value={status}
-          onChange={(event) => setStatus(event.target.value)}
-          className="w-fit rounded-lg border border-input bg-[hsl(var(--card))] px-3 py-2 text-sm"
-          data-testid="select-call-status"
-        >
-          <option value="all">All call states</option>
-          <option value="completed">Completed</option>
-          <option value="in_progress">In progress (Live)</option>
-          <option value="queued">Connecting (Queued)</option>
-          <option value="failed">Failed</option>
-          <option value="uncertain">Uncertain</option>
-          <option value="policy_blocked">Policy blocked</option>
-        </select>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant="primary"
+            onClick={() => setShowMakeCall(true)}
+            data-testid="button-open-make-call"
+          >
+            <PhoneCall size={15} /> Make a Call
+          </Button>
+          <button
+            type="button"
+            onClick={() => calls.refetch()}
+            disabled={calls.isFetching}
+            data-testid="button-refresh-calls"
+            className="inline-flex items-center gap-2 rounded-lg border border-border bg-[hsl(var(--card))] px-3 py-2 text-sm font-semibold hover:bg-[hsl(var(--muted))] disabled:opacity-60 cursor-pointer"
+          >
+            <RefreshCw size={15} className={calls.isFetching ? 'animate-spin' : ''} /> Refresh
+          </button>
+        </div>
+      </div>
+
+      {/* Filter and Search Bar */}
+      <div className="flex flex-col gap-3 rounded-xl border border-border bg-[hsl(var(--card))] p-3 md:flex-row md:items-center">
+        <div className="relative min-w-0 flex-1">
+          <Search className="absolute left-3 top-2.5 text-muted-foreground" size={17} />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search contact, phone, agent name, or call ID…"
+            className="w-full rounded-lg border border-input bg-background py-2 pl-9 pr-3 text-sm outline-none focus:border-[hsl(var(--accent))]"
+            data-testid="input-search-calls"
+          />
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <select
+            value={status}
+            onChange={(e) => setStatus(e.target.value)}
+            className="rounded-lg border border-input bg-background px-3 py-2 text-sm"
+            data-testid="select-call-status"
+          >
+            <option value="all">All statuses</option>
+            <option value="completed">Completed</option>
+            <option value="in_progress">Live (In Progress)</option>
+            <option value="queued">Queued / Connecting</option>
+            <option value="policy_blocked">Policy Blocked</option>
+            <option value="failed">Failed</option>
+            <option value="uncertain">Uncertain</option>
+          </select>
+
+          <select
+            value={callType}
+            onChange={(e) => setCallType(e.target.value)}
+            className="rounded-lg border border-input bg-background px-3 py-2 text-sm"
+            data-testid="select-call-type"
+          >
+            <option value="all">All call types</option>
+            <option value="outbound">Outbound</option>
+            <option value="inbound">Inbound</option>
+            <option value="test">Test Simulation</option>
+            <option value="web_call">Web Call</option>
+          </select>
+
+          <select
+            value={sentiment}
+            onChange={(e) => setSentiment(e.target.value)}
+            className="rounded-lg border border-input bg-background px-3 py-2 text-sm"
+            data-testid="select-call-sentiment"
+          >
+            <option value="all">All sentiments</option>
+            <option value="positive">Positive</option>
+            <option value="neutral">Neutral</option>
+            <option value="negative">Negative</option>
+            <option value="mixed">Mixed</option>
+          </select>
+
+          {(status !== 'all' || callType !== 'all' || sentiment !== 'all' || search) && (
+            <Button
+              variant="quiet"
+              className="px-2 text-xs"
+              onClick={() => {
+                setStatus('all');
+                setCallType('all');
+                setSentiment('all');
+                setSearch('');
+              }}
+              data-testid="button-clear-call-filters"
+            >
+              Clear
+            </Button>
+          )}
+        </div>
       </div>
 
       {/* Dedicated LIVE CALLS section — only shown when active/queued calls exist */}
@@ -778,12 +867,11 @@ function CallsPage() {
             {activeCalls.map((item) => (
               <div
                 key={item.id}
-                className={`rounded-xl border p-4 bg-[hsl(var(--card))] shadow-sm transition hover:shadow-md cursor-pointer ${
-                  item.status === 'in_progress'
+                className={`rounded-xl border p-4 bg-[hsl(var(--card))] shadow-sm transition hover:shadow-md cursor-pointer ${item.status === 'in_progress'
                     ? 'border-emerald-500/40 hover:border-emerald-500/70'
                     : 'border-amber-500/40 hover:border-amber-500/70'
-                }`}
-                onClick={() => setSelected(item.id)}
+                  }`}
+                onClick={() => setSelectedCallId(item.id)}
                 data-testid={`card-live-call-${item.id}`}
               >
                 <div className="flex items-start justify-between gap-2">
@@ -836,206 +924,356 @@ function CallsPage() {
         </section>
       )}
 
-      {/* Existing Calls History Table */}
+      {/* Main Call History Table */}
       {!calls.data?.length ? (
         <EmptyState
           icon={Headphones}
-          title="No calls in this window"
-          description="When a lead is called, provider state and outcome will be kept here."
+          title="No calls match that filter"
+          description="Clear search or status filters, or initiate a call with Make a Call."
+          action={
+            <Button onClick={() => setShowMakeCall(true)} data-testid="button-empty-make-call">
+              <PhoneCall size={15} /> Make a Call
+            </Button>
+          }
         />
       ) : (
         <div className="overflow-hidden rounded-xl border border-border bg-[hsl(var(--card))]">
-          <div className="hidden grid-cols-[1.25fr_1fr_1fr_1fr_1.4fr_40px] gap-4 border-b border-border bg-[hsl(var(--muted)/.55)] px-5 py-3 text-[10px] font-bold uppercase tracking-[.14em] text-muted-foreground md:grid">
-            <span>Lead</span>
-            <span>Provider</span>
+          <div className="hidden grid-cols-[minmax(200px,1.4fr)_130px_130px_130px_1fr_130px_45px] gap-3 border-b border-border bg-[hsl(var(--muted)/.55)] px-5 py-3 text-[10px] font-bold uppercase tracking-[.14em] text-muted-foreground md:grid">
+            <span>Contact & Call ID</span>
+            <span>Type & Agent</span>
             <span>State</span>
-            <span>Duration</span>
-            <span>Outcome</span>
+            <span>Timing / Duration</span>
+            <span>Sentiment & Outcome</span>
+            <span>Indicators</span>
             <span />
           </div>
+
           <div className="divide-y divide-border">
             {calls.data.map((item) => (
               <div
                 key={item.id}
-                className={`grid gap-3 px-4 py-4 md:grid-cols-[1.25fr_1fr_1fr_1fr_1.4fr_40px] md:items-center md:gap-4 md:px-5 transition ${
+                className={`grid gap-3 px-4 py-4 transition hover:bg-[hsl(var(--muted)/.32)] md:grid-cols-[minmax(200px,1.4fr)_130px_130px_130px_1fr_130px_45px] md:items-center md:gap-3 md:px-5 ${
                   item.status === 'in_progress' ? 'bg-emerald-500/[0.02]' : ''
                 }`}
                 data-testid={`row-call-${item.id}`}
               >
-                <div>
+                {/* Contact & Call ID */}
+                <div className="min-w-0">
                   <button
-                    onClick={() => setSelected(item.id)}
-                    className="text-left text-sm font-bold hover:text-[hsl(var(--accent))]"
+                    onClick={() => setSelectedCallId(item.id)}
+                    className="text-left text-sm font-bold truncate hover:text-[hsl(var(--accent))] block max-w-full"
                     data-testid={`button-open-call-${item.id}`}
                   >
                     {item.lead_name}
                   </button>
-                  <p className="mt-0.5 text-xs text-muted-foreground">
-                    {item.phone} · {formatDate(item.started_at)}
+                  <p className="mt-0.5 text-xs text-muted-foreground truncate">{item.phone}</p>
+                  <span className="font-mono text-[10px] text-muted-foreground/80 block mt-0.5">
+                    ID: {item.id.slice(-8)}
+                    {(item as any).provider_call_id ? ` · Retell: ${(item as any).provider_call_id.slice(-8)}` : ''}
+                  </span>
+                </div>
+
+                {/* Type & Agent */}
+                <div className="space-y-1">
+                  <Badge className="bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300 text-[10px]">
+                    {item.call_type}
+                  </Badge>
+                  <p className="text-xs text-muted-foreground truncate flex items-center gap-1">
+                    <Bot size={12} className="shrink-0" />
+                    <span className="truncate">{item.agent_name || 'Receptionist'}</span>
                   </p>
                 </div>
-                <div className="text-sm">
-                  <span className="font-medium">{item.provider}</span>
-                  {item.transferred && (
-                    <span className="ml-2 text-[11px] text-[hsl(var(--accent))]">Transferred</span>
-                  )}
-                </div>
+
+                {/* State */}
                 <div>
                   <CallStatusBadge status={item.status} />
                 </div>
-                <div className="font-mono text-xs text-muted-foreground">
-                  {item.status === 'in_progress' ? (
-                    <span className="font-bold text-emerald-600 dark:text-emerald-400">
-                      <LiveCallDuration startedAt={item.started_at} status={item.status} durationSeconds={item.duration_seconds} />
+
+                {/* Timing / Duration */}
+                <div className="text-xs">
+                  <div className="font-mono">
+                    {item.status === 'in_progress' ? (
+                      <span className="font-bold text-emerald-600 dark:text-emerald-400">
+                        <LiveCallDuration startedAt={item.started_at} status={item.status} durationSeconds={item.duration_seconds} />
+                      </span>
+                    ) : item.status === 'queued' ? (
+                      <span className="text-amber-600 dark:text-amber-400">Connecting…</span>
+                    ) : (
+                      <span>{formatDuration(item.duration_seconds)}</span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-muted-foreground mt-0.5">{formatDate(item.started_at)}</p>
+                </div>
+
+                {/* Sentiment & Outcome */}
+                <div className="min-w-0">
+                  {item.sentiment && (
+                    <span
+                      className={`inline-flex items-center rounded-md px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider border mb-1 ${
+                        item.sentiment === 'positive'
+                          ? 'bg-emerald-50 text-emerald-700 border-emerald-300'
+                          : item.sentiment === 'negative'
+                          ? 'bg-rose-50 text-rose-700 border-rose-300'
+                          : item.sentiment === 'mixed'
+                          ? 'bg-purple-50 text-purple-700 border-purple-300'
+                          : 'bg-blue-50 text-blue-700 border-blue-300'
+                      }`}
+                    >
+                      {item.sentiment}
                     </span>
-                  ) : item.status === 'queued' ? (
-                    <span className="text-amber-600 dark:text-amber-400">Connecting…</span>
-                  ) : (
-                    <span>{formatDuration(item.duration_seconds)}</span>
+                  )}
+                  <p className="text-xs text-foreground/90 line-clamp-1">{item.outcome || item.summary || 'Call recorded'}</p>
+                  {item.disconnection_reason && (
+                    <p className="text-[10px] text-muted-foreground mt-0.5 truncate">
+                      Disconnect: {item.disconnection_reason.replaceAll('_', ' ')}
+                    </p>
                   )}
                 </div>
+
+                {/* Indicators: Message & Booking */}
+                <div className="flex flex-wrap gap-1">
+                  {item.message_left && (
+                    <span
+                      className="inline-flex items-center gap-1 rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700 dark:text-amber-400 border border-amber-500/20"
+                      title="Caller left a message"
+                    >
+                      <MessageSquare size={11} /> Message
+                    </span>
+                  )}
+                  {item.booked && (
+                    <span
+                      className="inline-flex items-center gap-1 rounded bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700 dark:text-emerald-400 border border-emerald-500/20"
+                      title="Appointment booked"
+                    >
+                      <CalendarDays size={11} /> Booked
+                    </span>
+                  )}
+                  {!item.message_left && !item.booked && (
+                    <span className="text-[11px] text-muted-foreground">—</span>
+                  )}
+                </div>
+
+                {/* Details Button */}
                 <div>
-                  <p className="line-clamp-2 text-sm">{item.outcome || item.summary || 'No outcome recorded'}</p>
-                  {item.error_state && (
-                    <p className="mt-1 text-xs text-[hsl(var(--destructive))]">{item.error_state}</p>
-                  )}
+                  <button
+                    className="rounded-lg p-2 text-muted-foreground hover:bg-[hsl(var(--muted))]"
+                    onClick={() => setSelectedCallId(item.id)}
+                    title="Open details"
+                    data-testid={`button-call-menu-${item.id}`}
+                  >
+                    <MoreHorizontal size={16} />
+                  </button>
                 </div>
-                <button
-                  className="rounded-lg p-2 text-muted-foreground hover:bg-[hsl(var(--muted))]"
-                  onClick={() => setSelected(item.id)}
-                  data-testid={`button-call-menu-${item.id}`}
-                >
-                  <MoreHorizontal size={16} />
-                </button>
               </div>
             ))}
           </div>
         </div>
       )}
 
-      {/* Call Detail Drawer */}
-      {selected && (
-        <div
-          className="fixed inset-0 z-40 flex justify-end bg-[#102632]/30"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setSelected(null);
-          }}
-        >
-          <div className="h-full w-full max-w-[510px] overflow-y-auto bg-[hsl(var(--card))] p-6 shadow-2xl">
-            <div className="flex justify-between items-start">
-              <div>
-                <p className="text-[10px] font-bold uppercase tracking-[.18em] text-[hsl(var(--accent))]">
-                  Call detail
-                </p>
-                <h2 className="mt-1 text-2xl font-bold">{call.data?.lead_name || 'Call'}</h2>
-                {call.data?.phone && (
-                  <p className="text-xs text-muted-foreground mt-0.5">{call.data.phone}</p>
-                )}
-              </div>
-              <button
-                onClick={() => setSelected(null)}
-                data-testid="button-close-call"
-                className="rounded-lg p-1 text-muted-foreground hover:bg-[hsl(var(--muted))]"
-              >
-                <X size={18} />
-              </button>
-            </div>
+      {/* Call Details Drawer with Audio Player and Monospace Transcript */}
+      <CallDrawer
+        callId={selectedCallId}
+        onClose={() => setSelectedCallId(null)}
+        onOpenMessage={() => {
+          setSelectedCallId(null);
+          setLocation('/workspace/messages');
+        }}
+      />
 
-            {call.isLoading ? (
-              <div className="mt-8 space-y-3">
-                <Skeleton className="h-24" />
-                <Skeleton className="h-40" />
-              </div>
-            ) : (
-              call.data && (
-                <>
-                  {call.data.status === 'in_progress' && (
-                    <div className="mt-5 flex items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-800 dark:text-emerald-300">
-                      <span className="relative flex h-2 w-2">
-                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-                        <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
-                      </span>
-                      <span>Call is actively live with Retell</span>
-                    </div>
-                  )}
-
-                  {call.data.status === 'queued' && (
-                    <div className="mt-5 flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-300">
-                      <span className="relative inline-flex h-2 w-2 animate-pulse rounded-full bg-amber-500" />
-                      <span>Connecting to Retell provider · awaiting call start</span>
-                    </div>
-                  )}
-
-                  <div className="mt-6 grid grid-cols-2 gap-3">
-                    <div className="rounded-lg border border-border bg-[hsl(var(--muted)/.3)] p-3">
-                      <p className="text-[10px] font-bold uppercase tracking-[.14em] text-muted-foreground">State</p>
-                      <div className="mt-1.5">
-                        <CallStatusBadge status={call.data.status} />
-                      </div>
-                    </div>
-                    <Info label="Provider" value={call.data.provider} />
-                    <Info label="Started" value={formatTime(call.data.started_at)} />
-                    {call.data.status === 'in_progress' ? (
-                      <div className="rounded-lg border border-border bg-[hsl(var(--muted)/.3)] p-3">
-                        <p className="text-[10px] font-bold uppercase tracking-[.14em] text-muted-foreground">Live Duration</p>
-                        <p className="mt-1 font-mono font-bold text-emerald-600 dark:text-emerald-400">
-                          <LiveCallDuration startedAt={call.data.started_at} status={call.data.status} durationSeconds={call.data.duration_seconds} />
-                        </p>
-                      </div>
-                    ) : (
-                      <Info label="Duration" value={formatDuration(call.data.duration_seconds)} />
-                    )}
-                    {call.data.ended_at && (
-                      <Info label="Ended" value={formatTime(call.data.ended_at)} />
-                    )}
-                  </div>
-
-                  <div className="mt-6 rounded-xl bg-[hsl(var(--muted)/.55)] p-4">
-                    <p className="text-[10px] font-bold uppercase tracking-[.15em] text-muted-foreground">Summary</p>
-                    <p className="mt-2 text-sm leading-6">{call.data.summary || 'No summary recorded.'}</p>
-                  </div>
-
-                  <div className="mt-4 flex gap-2">
-                    <Badge className={call.data.booked ? statusTone('confirmed') : statusTone('created')}>
-                      {call.data.booked ? 'Appointment booked' : 'No booking'}
-                    </Badge>
-                    {call.data.transferred && <Badge className={statusTone('qualified')}>Transferred</Badge>}
-                  </div>
-                </>
-              )
-            )}
-
-            {call.data?.error_state && (
-              <div className="mt-5 rounded-lg border border-[hsl(var(--destructive)/.25)] p-4 text-sm text-[hsl(var(--destructive))]">
-                <AlertTriangle size={15} className="mr-2 inline" />
-                {call.data.error_state}
-              </div>
-            )}
-
-            <Button
-              variant="primary"
-              className="mt-7 w-full"
-              onClick={() => {
-                if (call.data) startCall.mutate({ data: { lead_id: call.data.lead_id } });
-              }}
-              disabled={!call.data || startCall.isPending || call.data.status === 'in_progress'}
-              data-testid="button-retry-call"
-            >
-              <PhoneCall size={15} />
-              {call.data?.status === 'in_progress' ? 'Call in progress' : 'Retry call'}
-            </Button>
-          </div>
-        </div>
-      )}
+      {/* Safe Make Call Modal */}
+      <MakeCallModal
+        open={showMakeCall}
+        onClose={() => setShowMakeCall(false)}
+        onSuccessCall={(newCallId: string) => setSelectedCallId(newCallId)}
+      />
     </div>
   );
 }
 
 function AppointmentsPage() {
+  const [filterStatus, setFilterStatus] = useState<string>('all');
+  const [search, setSearch] = useState('');
   const appointments = useGetAppointments();
-  if (appointments.isLoading) return <div className="space-y-3">{[1, 2, 3].map((n) => <Skeleton key={n} className="h-24" />)}</div>;
+
+  if (appointments.isLoading) {
+    return (
+      <div className="space-y-3">
+        {[1, 2, 3].map((n) => (
+          <Skeleton key={n} className="h-28" />
+        ))}
+      </div>
+    );
+  }
+
   if (appointments.isError) return <ErrorState retry={() => appointments.refetch()} />;
-  return <div className="animate-rise-in space-y-6"><div><p className="text-sm text-muted-foreground">Every row below has a source lead and a calendar confirmation.</p></div>{!appointments.data?.length ? <EmptyState icon={CalendarDays} title="No verified appointments yet" description="Once a lead books through the approved calendar, it will be visible here." /> : <div className="grid gap-4 lg:grid-cols-2">{appointments.data.map((appointment) => <div key={appointment.id} className="rounded-xl border border-border bg-[hsl(var(--card))] p-5 transition hover:-translate-y-0.5 hover:shadow-[0_8px_24px_hsl(209_43%_22%/.08)]" data-testid={`card-appointment-${appointment.id}`}><div className="flex items-start justify-between gap-4"><div className="flex items-center gap-3"><div className="flex h-10 w-10 items-center justify-center rounded-lg bg-[hsl(var(--accent)/.11)] font-mono text-xs font-bold text-[hsl(var(--accent))]">{formatTime(appointment.start_time)}</div><div><h3 className="font-bold">{appointment.lead_name}</h3><p className="mt-0.5 text-xs text-muted-foreground">{appointment.service_or_property}</p></div></div><Badge className={statusTone(appointment.status)}>{appointment.status}</Badge></div><div className="mt-5 grid grid-cols-2 gap-y-3 border-t border-border pt-4 text-sm"><Info label="Date" value={formatDate(appointment.start_time)} /><Info label="Timezone" value={appointment.timezone} /><Info label="Calendar" value={appointment.calendar_provider} /><Info label="External ID" value={appointment.external_id} /></div><Link href="/workspace/leads" className="mt-5 inline-flex items-center gap-1 text-xs font-bold text-[hsl(var(--accent))]" data-testid={`link-source-lead-${appointment.id}`}>Open source lead <ChevronRight size={13} /></Link></div>)}</div>}</div>;
+
+  const filtered = (appointments.data || []).filter((item) => {
+    const statusStr = String(item.status).toLowerCase();
+    if (filterStatus !== 'all' && statusStr !== filterStatus) return false;
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      const matchName = (item.customer_name || item.lead_name || '').toLowerCase().includes(q);
+      const matchPhone = (item.customer_phone || '').toLowerCase().includes(q);
+      const matchService = (item.service_or_property || '').toLowerCase().includes(q);
+      if (!matchName && !matchPhone && !matchService) return false;
+    }
+    return true;
+  });
+
+  return (
+    <div className="animate-rise-in space-y-6">
+      <div className="flex flex-col justify-between gap-4 lg:flex-row lg:items-end">
+        <div>
+          <p className="text-sm text-muted-foreground">
+            Verified appointments booked during receptionist phone calls and verified via Cal.com.
+          </p>
+          <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
+            <span className="font-mono text-foreground font-semibold">{appointments.data?.length ?? 0}</span> appointments total
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => appointments.refetch()}
+          disabled={appointments.isFetching}
+          data-testid="button-refresh-appointments"
+          className="inline-flex items-center gap-2 rounded-lg border border-border bg-[hsl(var(--card))] px-3 py-2 text-sm font-semibold hover:bg-[hsl(var(--muted))] disabled:opacity-60 cursor-pointer"
+        >
+          <RefreshCw size={15} className={appointments.isFetching ? 'animate-spin' : ''} /> Refresh
+        </button>
+      </div>
+
+      {/* Filter and Search Bar */}
+      <div className="flex flex-col gap-3 rounded-xl border border-border bg-[hsl(var(--card))] p-3 md:flex-row md:items-center">
+        <div className="relative min-w-0 flex-1">
+          <Search className="absolute left-3 top-2.5 text-muted-foreground" size={17} />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search by customer name, phone, or service…"
+            className="w-full rounded-lg border border-input bg-background py-2 pl-9 pr-3 text-sm outline-none focus:border-[hsl(var(--accent))]"
+            data-testid="input-search-appointments"
+          />
+        </div>
+        <div className="flex items-center gap-2">
+          <select
+            value={filterStatus}
+            onChange={(e) => setFilterStatus(e.target.value)}
+            className="rounded-lg border border-input bg-background px-3 py-2 text-sm"
+            data-testid="select-appointment-status"
+          >
+            <option value="all">All statuses</option>
+            <option value="confirmed">Confirmed</option>
+            <option value="pending">Pending</option>
+            <option value="cancelled">Cancelled</option>
+            <option value="failed">Failed</option>
+          </select>
+        </div>
+      </div>
+
+      {!filtered.length ? (
+        <EmptyState
+          icon={CalendarDays}
+          title="No verified appointments found"
+          description="Once callers choose an available booking slot, verified meetings will appear here."
+        />
+      ) : (
+        <div className="grid gap-4 lg:grid-cols-2">
+          {filtered.map((appointment) => {
+            const customerName = appointment.customer_name || appointment.lead_name || 'Valued Customer';
+            const statusStr = String(appointment.status).toLowerCase();
+            const isConfirmed = statusStr === 'confirmed';
+            const isPending = statusStr === 'pending';
+            const isCancelled = statusStr === 'cancelled';
+            const isFailed = statusStr === 'failed';
+
+            return (
+              <div
+                key={appointment.id}
+                className="rounded-xl border border-border bg-[hsl(var(--card))] p-5 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
+                data-testid={`card-appointment-${appointment.id}`}
+              >
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex items-start gap-3 min-w-0">
+                    <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[hsl(var(--accent)/.11)] font-mono text-xs font-bold text-[hsl(var(--accent))]">
+                      {formatTime(appointment.start_time)}
+                    </div>
+                    <div className="min-w-0">
+                      <h3 className="font-bold text-base truncate">{customerName}</h3>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        {appointment.service_or_property}
+                      </p>
+                      {(appointment.customer_phone || appointment.customer_email) && (
+                        <p className="text-xs text-muted-foreground mt-1 truncate">
+                          {[appointment.customer_phone, appointment.customer_email].filter(Boolean).join(' · ')}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Distinct Status Tone */}
+                  <Badge
+                    className={
+                      isConfirmed
+                        ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-500/30'
+                        : isPending
+                        ? 'bg-amber-500/15 text-amber-700 dark:text-amber-400 border border-amber-500/30'
+                        : isCancelled
+                        ? 'bg-rose-500/15 text-rose-700 dark:text-rose-400 border border-rose-500/30'
+                        : isFailed
+                        ? 'bg-red-500/15 text-red-700 dark:text-red-400 border border-red-500/30'
+                        : 'bg-slate-100 text-slate-700'
+                    }
+                  >
+                    {appointment.status}
+                  </Badge>
+                </div>
+
+                <div className="mt-5 grid grid-cols-2 gap-y-3 border-t border-border pt-4 text-sm">
+                  <Info label="Appointment Date" value={formatDate(appointment.start_time)} />
+                  <Info label="Timezone" value={appointment.timezone} />
+                  <div>
+                    <span className="block text-[10px] font-bold uppercase tracking-[.14em] text-muted-foreground">Calendar Reference</span>
+                    <span className="mt-0.5 block truncate font-medium text-xs">
+                      {appointment.calendar_provider}: {appointment.external_id || 'Pending sync'}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="block text-[10px] font-bold uppercase tracking-[.14em] text-muted-foreground">Related Call</span>
+                    {appointment.call_id ? (
+                      <Link
+                        href="/workspace/calls"
+                        className="mt-0.5 inline-flex items-center gap-1 font-mono text-xs font-semibold text-[hsl(var(--accent))] hover:underline"
+                        data-testid={`link-related-call-${appointment.id}`}
+                      >
+                        Call #{appointment.call_id.slice(-8)}
+                      </Link>
+                    ) : (
+                      <span className="mt-0.5 block font-medium text-xs text-muted-foreground">Manual Booking</span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="mt-4 flex items-center justify-between border-t border-border pt-3">
+                  {appointment.lead_id && (
+                    <Link
+                      href="/workspace/leads"
+                      className="inline-flex items-center gap-1 text-xs font-bold text-[hsl(var(--accent))] hover:underline"
+                      data-testid={`link-source-lead-${appointment.id}`}
+                    >
+                      Open pipeline lead <ChevronRight size={13} />
+                    </Link>
+                  )}
+                  <span className="text-[11px] text-muted-foreground font-mono">
+                    ID: {appointment.id.slice(-8)}
+                  </span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function SettingsPage() {
@@ -1088,7 +1326,7 @@ function DemoSignInPage() {
     try {
       localStorage.setItem('leadsprint_operator_signed_in', 'true');
       localStorage.setItem('leadsprint_operator_email', email || 'maya@northstarrealty.example');
-    } catch {}
+    } catch { }
     queryClient.invalidateQueries();
     setLocation('/workspace');
   };
@@ -1168,7 +1406,7 @@ function DemoSignUpPage() {
     try {
       localStorage.setItem('leadsprint_operator_signed_in', 'true');
       localStorage.setItem('leadsprint_operator_email', email || 'maya@northstarrealty.example');
-    } catch {}
+    } catch { }
     queryClient.invalidateQueries();
     setLocation('/workspace');
   };
@@ -1294,8 +1532,34 @@ function HomeRoute() {
   return <LandingPage />;
 }
 
+function MessagesRoute() {
+  const [, setLocation] = useLocation();
+  return (
+    <MessagesPage
+      onOpenCall={() => setLocation('/workspace/calls')}
+    />
+  );
+}
+
 function WorkspaceRoute() {
-  return <ErrorBoundary><AuthGate><Switch><Route path="/workspace" component={TodayPage} /><Route path="/workspace/leads" component={LeadsPage} /><Route path="/workspace/calls" component={CallsPage} /><Route path="/workspace/appointments" component={AppointmentsPage} /><Route path="/workspace/business-settings" component={SettingsPage} /><Route path="/workspace/onboarding" component={OnboardingPage} /><Route path="/workspace/reports" component={ReportsPage} /><Route component={NotFound} /></Switch></AuthGate></ErrorBoundary>;
+  return (
+    <ErrorBoundary>
+      <AuthGate>
+        <Switch>
+          <Route path="/workspace" component={TodayPage} />
+          <Route path="/workspace/agents" component={AgentsPage} />
+          <Route path="/workspace/messages" component={MessagesRoute} />
+          <Route path="/workspace/leads" component={LeadsPage} />
+          <Route path="/workspace/calls" component={CallsPage} />
+          <Route path="/workspace/appointments" component={AppointmentsPage} />
+          <Route path="/workspace/business-settings" component={SettingsPage} />
+          <Route path="/workspace/onboarding" component={OnboardingPage} />
+          <Route path="/workspace/reports" component={ReportsPage} />
+          <Route component={NotFound} />
+        </Switch>
+      </AuthGate>
+    </ErrorBoundary>
+  );
 }
 
 function ClerkQueryClientCacheInvalidator() {

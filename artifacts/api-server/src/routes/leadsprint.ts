@@ -4,12 +4,14 @@ import { and, desc, eq, ilike, or, sql } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   activitiesTable,
+  agentsTable,
   appointmentsTable,
   businessesTable,
   callsTable,
   consentEventsTable,
   contactsTable,
   leadsTable,
+  messagesTable,
   providerEventsTable,
   suppressionsTable,
   usageTable,
@@ -32,6 +34,7 @@ import {
   GetLeadResponse,
   GetLeadsQueryParams,
   GetLeadsResponse,
+  GetOverviewReportResponse,
   GetTodayResponse,
   GetUsageResponse,
   GetWeeklyReportResponse,
@@ -158,21 +161,63 @@ async function getLeadDto(leadId: string, businessId: string) {
 }
 
 async function getAppointmentDto(row: typeof appointmentsTable.$inferSelect, businessId: string) {
-  const [lead] = await db.select({ lead: leadsTable, contact: contactsTable }).from(leadsTable).innerJoin(contactsTable, eq(leadsTable.contactId, contactsTable.id)).where(and(eq(leadsTable.id, row.leadId), eq(leadsTable.businessId, businessId)));
+  const [lead] = row.leadId
+    ? await db
+        .select({ lead: leadsTable, contact: contactsTable })
+        .from(leadsTable)
+        .innerJoin(contactsTable, eq(leadsTable.contactId, contactsTable.id))
+        .where(and(eq(leadsTable.id, row.leadId), eq(leadsTable.businessId, businessId)))
+    : [];
   return {
-    id: row.id, lead_id: row.leadId, lead_name: lead?.contact.name ?? "Unknown lead",
-    service_or_property: row.serviceOrProperty, start_time: row.startTime.toISOString(), end_time: row.endTime.toISOString(),
-    timezone: row.timezone, calendar_provider: row.calendarProvider, external_id: row.externalId, status: row.status,
+    id: row.id,
+    lead_id: row.leadId,
+    lead_name: row.customerName ?? lead?.contact.name ?? "Unknown lead",
+    call_id: row.callId ?? null,
+    customer_name: row.customerName ?? lead?.contact.name ?? null,
+    customer_phone: row.customerPhone ?? lead?.contact.phone ?? null,
+    customer_email: row.customerEmail ?? lead?.contact.email ?? null,
+    service_or_property: row.serviceOrProperty,
+    start_time: row.startTime.toISOString(),
+    end_time: row.endTime.toISOString(),
+    timezone: row.timezone,
+    calendar_provider: row.calendarProvider,
+    external_id: row.externalId,
+    status: row.status,
   };
 }
 
 async function getCallDto(row: typeof callsTable.$inferSelect, businessId: string) {
-  const [contact] = await db.select().from(contactsTable).where(and(eq(contactsTable.id, row.contactId), eq(contactsTable.businessId, businessId)));
+  const [contact] = row.contactId
+    ? await db
+        .select()
+        .from(contactsTable)
+        .where(and(eq(contactsTable.id, row.contactId), eq(contactsTable.businessId, businessId)))
+    : [];
   return {
-    id: row.id, lead_id: row.leadId, lead_name: contact?.name ?? "Unknown lead", phone: contact?.phone ?? "",
-    provider: row.provider, status: row.status, started_at: iso(row.startedAt), ended_at: iso(row.endedAt),
-    duration_seconds: row.durationSeconds, summary: row.summary, outcome: row.outcome,
-    transferred: row.transferred, booked: row.booked, error_state: row.errorState,
+    id: row.id,
+    lead_id: row.leadId,
+    lead_name: contact?.name ?? "Unknown caller",
+    phone: contact?.phone ?? "",
+    provider: row.provider,
+    status: row.status,
+    started_at: iso(row.startedAt),
+    ended_at: iso(row.endedAt),
+    duration_seconds: row.durationSeconds,
+    summary: row.summary,
+    outcome: row.outcome,
+    transferred: row.transferred,
+    booked: row.booked,
+    error_state: row.errorState,
+    agent_id: row.agentId ?? null,
+    agent_name: row.agentName ?? null,
+    call_type: (row.callType as "inbound" | "outbound" | "web_call" | "test") ?? "outbound",
+    sentiment: row.sentiment ?? null,
+    recording_url: row.recordingUrl ?? null,
+    transcript: row.transcript ?? null,
+    disconnection_reason: row.disconnectionReason ?? null,
+    message_left: row.messageLeft ?? false,
+    message_id: row.messageId ?? null,
+    appointment_id: row.appointmentId ?? null,
   };
 }
 
@@ -478,7 +523,54 @@ router.get("/calls", async (req, res): Promise<void> => {
   const BUSINESS_ID = scopedBusinessId(req);
   const query = GetCallsQueryParams.safeParse(req.query);
   if (!query.success) { res.status(400).json({ error: query.error.message }); return; }
-  const rows = await db.select().from(callsTable).where(and(eq(callsTable.businessId, BUSINESS_ID), query.data.status ? eq(callsTable.status, query.data.status) : undefined)).orderBy(desc(callsTable.createdAt));
+
+  const conditions = [eq(callsTable.businessId, BUSINESS_ID)];
+  if (query.data.status) {
+    conditions.push(eq(callsTable.status, query.data.status));
+  }
+  if (query.data.call_type) {
+    conditions.push(eq(callsTable.callType, query.data.call_type));
+  }
+  if (query.data.agent_id) {
+    conditions.push(eq(callsTable.agentId, query.data.agent_id));
+  }
+  if (query.data.sentiment) {
+    conditions.push(eq(callsTable.sentiment, query.data.sentiment));
+  }
+  if (query.data.from_date) {
+    const fromD = new Date(query.data.from_date);
+    if (!isNaN(fromD.getTime())) conditions.push(sql`${callsTable.createdAt} >= ${fromD}`);
+  }
+  if (query.data.to_date) {
+    const toD = new Date(query.data.to_date);
+    if (!isNaN(toD.getTime())) conditions.push(sql`${callsTable.createdAt} <= ${toD}`);
+  }
+  if (query.data.search && query.data.search.trim()) {
+    const term = `%${query.data.search.trim()}%`;
+    conditions.push(
+      or(
+        ilike(callsTable.summary, term),
+        ilike(callsTable.agentName, term),
+        ilike(callsTable.outcome, term),
+      )!,
+    );
+  }
+
+  let queryBuilder = db
+    .select()
+    .from(callsTable)
+    .where(and(...conditions))
+    .orderBy(desc(callsTable.createdAt));
+
+  if (query.data.limit) {
+    queryBuilder = (queryBuilder as any).limit(query.data.limit);
+  }
+  if (query.data.offset) {
+    queryBuilder = (queryBuilder as any).offset(query.data.offset);
+  }
+
+  const rows = await queryBuilder;
+
   sendValidatedResponse(res, GetCallsResponse, await Promise.all(rows.map((row) => getCallDto(row, BUSINESS_ID))));
 });
 
@@ -495,23 +587,96 @@ router.post("/calls/start", async (req, res): Promise<void> => {
   const BUSINESS_ID = scopedBusinessId(req);
   const body = StartCallBody.safeParse(req.body);
   if (!body.success) { res.status(400).json({ error: body.error.message }); return; }
-  const lead = await getLeadDto(body.data.lead_id, BUSINESS_ID);
-  if (!lead) { res.status(404).json({ error: "Lead not found" }); return; }
-  const [existing] = await db.select().from(callsTable).where(and(eq(callsTable.leadId, body.data.lead_id), eq(callsTable.businessId, BUSINESS_ID), eq(callsTable.status, "in_progress"))).limit(1);
-  if (existing) { sendValidatedResponse(res, StartCallResponse, await getCallDto(existing, BUSINESS_ID)); return; }
+
+  let targetLeadId: string | null = body.data.lead_id || null;
+  let targetPhone = body.data.phone || "";
+  let customerName = body.data.customer_name || "";
+  let contactId = "";
+
+  if (targetLeadId) {
+    const lead = await getLeadDto(targetLeadId, BUSINESS_ID);
+    if (!lead) { res.status(404).json({ error: "Lead not found" }); return; }
+    targetPhone = targetPhone || lead.phone;
+    customerName = customerName || lead.name;
+    const [leadRow] = await db.select({ contactId: leadsTable.contactId }).from(leadsTable).where(and(eq(leadsTable.id, targetLeadId), eq(leadsTable.businessId, BUSINESS_ID)));
+    contactId = leadRow?.contactId ?? "";
+    const [existing] = await db.select().from(callsTable).where(and(eq(callsTable.leadId, targetLeadId), eq(callsTable.businessId, BUSINESS_ID), eq(callsTable.status, "in_progress"))).limit(1);
+    if (existing) { sendValidatedResponse(res, StartCallResponse, await getCallDto(existing, BUSINESS_ID)); return; }
+  } else if (targetPhone) {
+    const normalized = normalizeToE164(targetPhone);
+    const phoneToUse = normalized.valid ? normalized.e164 : targetPhone;
+    const [existingContact] = await db.select().from(contactsTable).where(and(eq(contactsTable.businessId, BUSINESS_ID), eq(contactsTable.phone, phoneToUse))).limit(1);
+    if (existingContact) {
+      contactId = existingContact.id;
+      customerName = customerName || existingContact.name;
+    } else {
+      contactId = id("contact");
+      customerName = customerName || "Direct Call";
+      await db.insert(contactsTable).values({
+        id: contactId,
+        businessId: BUSINESS_ID,
+        name: customerName,
+        phone: phoneToUse,
+        consentStatus: "valid",
+      });
+    }
+
+    const [existingLead] = await db
+      .select({ id: leadsTable.id })
+      .from(leadsTable)
+      .where(and(eq(leadsTable.businessId, BUSINESS_ID), eq(leadsTable.contactId, contactId)))
+      .orderBy(desc(leadsTable.createdAt))
+      .limit(1);
+
+    if (existingLead) {
+      targetLeadId = existingLead.id;
+    } else {
+      const newLeadId = id("lead");
+      await db.insert(leadsTable).values({
+        id: newLeadId,
+        businessId: BUSINESS_ID,
+        contactId,
+        source: "Direct Call",
+        campaign: "Operator Outbound",
+        project: (await getBusiness(BUSINESS_ID))?.projectName ?? "Configured project",
+        propertyType: "Not specified",
+        budgetLabel: "Not specified",
+        location: "Not specified",
+        timeline: "Not specified",
+        intentScore: 50,
+        score: "warm",
+        status: "new",
+        nextAction: "Call in progress",
+      });
+      targetLeadId = newLeadId;
+    }
+  } else {
+    res.status(400).json({ error: "Either lead_id or phone must be provided" });
+    return;
+  }
+
+  let agentId: string | null = null;
+  let agentName: string | null = null;
+  if (body.data.agent_id) {
+    const [agent] = await db.select().from(agentsTable).where(and(eq(agentsTable.id, body.data.agent_id), eq(agentsTable.businessId, BUSINESS_ID)));
+    if (agent) {
+      agentId = agent.id;
+      agentName = agent.name;
+    }
+  }
 
   const business = await getBusiness(BUSINESS_ID);
-  const [leadRow] = await db.select({ contactId: leadsTable.contactId }).from(leadsTable).where(and(eq(leadsTable.id, body.data.lead_id), eq(leadsTable.businessId, BUSINESS_ID)));
-  const contactId = leadRow?.contactId ?? "";
   const [contact] = contactId ? await db.select().from(contactsTable).where(eq(contactsTable.id, contactId)) : [];
-  const priorAttempts = (await db.select({ id: callsTable.id }).from(callsTable).where(and(eq(callsTable.leadId, body.data.lead_id), eq(callsTable.businessId, BUSINESS_ID), sql`${callsTable.status} != 'policy_blocked'`))).length;
+  const priorAttempts = targetLeadId
+    ? (await db.select({ id: callsTable.id }).from(callsTable).where(and(eq(callsTable.leadId, targetLeadId), eq(callsTable.businessId, BUSINESS_ID), sql`${callsTable.status} != 'policy_blocked'`))).length
+    : 0;
 
   const activeUsage = await getActiveUsageRow(BUSINESS_ID, new Date(), db);
   const currentVoiceMinutes = Number(activeUsage.voiceMinutes);
 
   const callId = id("call");
+  const callType = (body.data.call_type as "inbound" | "outbound" | "web_call" | "test") || "outbound";
 
-  // Non-negotiable safety gate: consent -> not suppressed -> quiet hours -> attempt limit -> kill switch -> usage limit.
   const decision = evaluateCallPolicy({
     business: {
       timezone: business?.timezone ?? "UTC",
@@ -527,45 +692,179 @@ router.post("/calls/start", async (req, res): Promise<void> => {
 
   if (!decision.allowed) {
     const [blocked] = await db.insert(callsTable).values({
-      id: callId, businessId: BUSINESS_ID, contactId, leadId: body.data.lead_id, provider: "Retell",
-      idempotencyKey: `manual_${callId}`, status: "policy_blocked",
-      outcome: `Blocked — ${decision.reason}`, summary: decision.message ?? "Blocked by call policy.", errorState: decision.reason,
+      id: callId,
+      businessId: BUSINESS_ID,
+      contactId,
+      leadId: targetLeadId,
+      agentId,
+      agentName,
+      callType,
+      provider: "Retell",
+      idempotencyKey: `manual_${callId}`,
+      status: "policy_blocked",
+      outcome: `Blocked — ${decision.reason}`,
+      summary: decision.message ?? "Blocked by call policy.",
+      errorState: decision.reason,
     }).returning();
-    await db.insert(activitiesTable).values({ id: id("activity"), businessId: BUSINESS_ID, type: "policy", title: `Call blocked for ${lead.name}`, detail: decision.message ?? "Blocked by call policy." });
+    await db.insert(activitiesTable).values({
+      id: id("activity"),
+      businessId: BUSINESS_ID,
+      type: "policy",
+      title: `Call blocked for ${customerName || targetPhone}`,
+      detail: decision.message ?? "Blocked by call policy.",
+    });
     sendValidatedResponse(res, StartCallResponse, await getCallDto(blocked, BUSINESS_ID), 409);
     return;
   }
 
-  const normalizedLeadPhone = normalizeToE164(lead.phone);
+  const normalizedLeadPhone = normalizeToE164(targetPhone);
   if (!normalizedLeadPhone.valid) {
-    res.status(400).json({ error: `Cannot place call: Lead phone number (${lead.phone}) is invalid: ${normalizedLeadPhone.error}` });
+    res.status(400).json({ error: `Cannot place call: Phone number (${targetPhone}) is invalid: ${normalizedLeadPhone.error}` });
     return;
   }
 
-  const [created] = await db.insert(callsTable).values({ id: callId, businessId: BUSINESS_ID, contactId, leadId: body.data.lead_id, provider: "Retell", idempotencyKey: `manual_${callId}`, status: "queued", outcome: "Queued for provider", summary: "Call queued for the approved qualification script." }).returning();
+  const [created] = await db.insert(callsTable).values({
+    id: callId,
+    businessId: BUSINESS_ID,
+    contactId,
+    leadId: targetLeadId,
+    agentId,
+    agentName,
+    callType,
+    provider: "Retell",
+    idempotencyKey: `manual_${callId}`,
+    status: "queued",
+    outcome: "Queued for provider",
+    summary: agentName ? `Call queued for agent ${agentName}.` : "Call queued for the approved qualification script.",
+  }).returning();
+
   let current = created;
   const businessFromNumber = business?.phoneNumber?.trim() || undefined;
-  const liveRetell = hasRetellConfigForMarket(business?.market === "IN" ? "IN" : "US", businessFromNumber, business?.retellAgentId ?? undefined);
+  const effectiveAgentId = agentId || business?.retellAgentId || undefined;
+  const liveRetell = hasRetellConfigForMarket(business?.market === "IN" ? "IN" : "US", businessFromNumber, effectiveAgentId);
+
   if (liveRetell) {
     try {
       const live = await startRetellCall({
         toNumber: normalizedLeadPhone.e164,
         market: business?.market === "IN" ? "IN" : "US",
-        agentId: business?.retellAgentId ?? undefined,
+        agentId: effectiveAgentId,
         fromNumber: businessFromNumber,
-        metadata: { business_id: BUSINESS_ID, lead_id: body.data.lead_id, call_id: callId },
+        metadata: { business_id: BUSINESS_ID, lead_id: targetLeadId || "", call_id: callId },
       });
-      [current] = await db.update(callsTable).set({ providerCallId: live.callId, status: "in_progress", startedAt: new Date(), outcome: "Live call started with Retell", summary: "Retell accepted the call and will report the final outcome by webhook." }).where(and(eq(callsTable.id, callId), eq(callsTable.businessId, BUSINESS_ID))).returning();
+      [current] = await db.update(callsTable).set({
+        providerCallId: live.callId,
+        status: "in_progress",
+        startedAt: new Date(),
+        outcome: "Live call started with Retell",
+        summary: "Retell accepted the call and will report the final outcome by webhook.",
+      }).where(and(eq(callsTable.id, callId), eq(callsTable.businessId, BUSINESS_ID))).returning();
     } catch (error) {
       const message = error instanceof Error ? error.message : "Retell request failed";
-      [current] = await db.update(callsTable).set({ status: "uncertain", errorState: message, outcome: "Provider state uncertain", summary: "The call request could not be confirmed. Reconcile from the provider callback before retrying." }).where(and(eq(callsTable.id, callId), eq(callsTable.businessId, BUSINESS_ID))).returning();
+      [current] = await db.update(callsTable).set({
+        status: "uncertain",
+        errorState: message,
+        outcome: "Provider state uncertain",
+        summary: "The call request could not be confirmed. Reconcile from the provider callback before retrying.",
+      }).where(and(eq(callsTable.id, callId), eq(callsTable.businessId, BUSINESS_ID))).returning();
       req.log.error({ callId, err: message }, "Retell call start failed");
     }
   } else {
     await db.insert(workflowJobsTable).values({ id: id("job"), businessId: BUSINESS_ID, type: "initiate_call", idempotencyKey: callId });
   }
-  await db.insert(activitiesTable).values({ id: id("activity"), businessId: BUSINESS_ID, type: "call", title: `Call ${liveRetell ? "started" : "queued"} for ${lead.name}`, detail: liveRetell ? "Retell accepted the call · awaiting signed callback" : "Demo mode · Retell credentials are not configured", });
+
+  await db.insert(activitiesTable).values({
+    id: id("activity"),
+    businessId: BUSINESS_ID,
+    type: "call",
+    title: `Call ${liveRetell ? "started" : "queued"} for ${customerName || targetPhone}`,
+    detail: liveRetell ? "Retell accepted the call · awaiting signed callback" : "Demo mode · Retell credentials are not configured",
+  });
   sendValidatedResponse(res, StartCallResponse, await getCallDto(current, BUSINESS_ID), 201);
+});
+
+router.get("/reports/overview", async (req, res): Promise<void> => {
+  const BUSINESS_ID = scopedBusinessId(req);
+
+  const calls = await db
+    .select({
+      id: callsTable.id,
+      durationSeconds: callsTable.durationSeconds,
+      sentiment: callsTable.sentiment,
+      status: callsTable.status,
+      outcome: callsTable.outcome,
+    })
+    .from(callsTable)
+    .where(eq(callsTable.businessId, BUSINESS_ID));
+
+  const totalCalls = calls.length;
+  let totalDurationSeconds = 0;
+  const sentimentBreakdown = {
+    positive: 0,
+    neutral: 0,
+    negative: 0,
+    mixed: 0,
+    unknown: 0,
+  };
+  let successfulCalls = 0;
+
+  for (const c of calls) {
+    if (c.durationSeconds != null) {
+      totalDurationSeconds += c.durationSeconds;
+    }
+    const s = (c.sentiment || "").toLowerCase();
+    if (s.includes("pos")) {
+      sentimentBreakdown.positive += 1;
+    } else if (s.includes("neg")) {
+      sentimentBreakdown.negative += 1;
+    } else if (s.includes("mix")) {
+      sentimentBreakdown.mixed += 1;
+    } else if (s.includes("neu")) {
+      sentimentBreakdown.neutral += 1;
+    } else {
+      sentimentBreakdown.unknown += 1;
+    }
+
+    if (
+      c.status === "completed" ||
+      (c.outcome && !c.outcome.toLowerCase().includes("fail") && !c.outcome.toLowerCase().includes("block"))
+    ) {
+      successfulCalls += 1;
+    }
+  }
+
+  const avgDurationSeconds = totalCalls > 0 ? Math.round(totalDurationSeconds / totalCalls) : 0;
+
+  const messages = await db
+    .select({ isHandled: messagesTable.isHandled })
+    .from(messagesTable)
+    .where(eq(messagesTable.businessId, BUSINESS_ID));
+  const totalMessages = messages.length;
+  const unhandledMessages = messages.filter((m) => !m.isHandled).length;
+
+  const appointments = await db
+    .select({ id: appointmentsTable.id })
+    .from(appointmentsTable)
+    .where(eq(appointmentsTable.businessId, BUSINESS_ID));
+  const totalBookings = appointments.length;
+
+  const agents = await db
+    .select({ id: agentsTable.id })
+    .from(agentsTable)
+    .where(and(eq(agentsTable.businessId, BUSINESS_ID), eq(agentsTable.isActive, true)));
+  const activeAgents = agents.length;
+
+  sendValidatedResponse(res, GetOverviewReportResponse, {
+    total_calls: totalCalls,
+    total_duration_seconds: totalDurationSeconds,
+    avg_duration_seconds: avgDurationSeconds,
+    sentiment_breakdown: sentimentBreakdown,
+    successful_calls: successfulCalls,
+    total_messages: totalMessages,
+    unhandled_messages: unhandledMessages,
+    total_bookings: totalBookings,
+    active_agents: activeAgents,
+  });
 });
 
 router.get("/appointments", async (_req, res): Promise<void> => {

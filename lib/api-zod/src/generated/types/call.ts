@@ -5,6 +5,7 @@
  * LeadSprint operator console API
  * OpenAPI spec version: 0.1.0
  */
+import type { CallCallType } from './callCallType';
 import type { CallStatus } from './callStatus';
 
 export interface Call {
@@ -26,4 +27,22 @@ export interface Call {
   booked: boolean;
   /** @nullable */
   error_state: string | null;
+  /** @nullable */
+  agent_id?: string | null;
+  /** @nullable */
+  agent_name?: string | null;
+  call_type: CallCallType;
+  /** @nullable */
+  sentiment?: string | null;
+  /** @nullable */
+  recording_url?: string | null;
+  /** @nullable */
+  transcript?: string | null;
+  /** @nullable */
+  disconnection_reason?: string | null;
+  message_left: boolean;
+  /** @nullable */
+  message_id?: string | null;
+  /** @nullable */
+  appointment_id?: string | null;
 }

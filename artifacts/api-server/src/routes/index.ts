@@ -7,6 +7,8 @@ import leadsprintRouter, {
   DEMO_USER_ID,
   ensureSeedData,
 } from "./leadsprint";
+import agentsRouter from "./agents";
+import messagesRouter from "./messages";
 import webhooksRouter from "./webhooks";
 import cronRouter from "./cron";
 import { requireAuth } from "../middlewares/auth";
@@ -95,6 +97,8 @@ if (demoAuthEnabled) {
 }
 
 router.use(leadsprintRouter);
+router.use(agentsRouter);
+router.use(messagesRouter);
 
 // Unknown /api/* paths are an API error, not an SPA route: answer with JSON
 // instead of falling through to Express's default HTML error page.

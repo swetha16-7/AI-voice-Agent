@@ -223,6 +223,16 @@ export const CallStatus = {
   uncertain: 'uncertain',
 } as const;
 
+export type CallCallType = typeof CallCallType[keyof typeof CallCallType];
+
+
+export const CallCallType = {
+  inbound: 'inbound',
+  outbound: 'outbound',
+  web_call: 'web_call',
+  test: 'test',
+} as const;
+
 export interface Call {
   id: string;
   lead_id: string;
@@ -242,10 +252,42 @@ export interface Call {
   booked: boolean;
   /** @nullable */
   error_state: string | null;
+  /** @nullable */
+  agent_id?: string | null;
+  /** @nullable */
+  agent_name?: string | null;
+  call_type: CallCallType;
+  /** @nullable */
+  sentiment?: string | null;
+  /** @nullable */
+  recording_url?: string | null;
+  /** @nullable */
+  transcript?: string | null;
+  /** @nullable */
+  disconnection_reason?: string | null;
+  message_left: boolean;
+  /** @nullable */
+  message_id?: string | null;
+  /** @nullable */
+  appointment_id?: string | null;
 }
 
+export type StartCallInputCallType = typeof StartCallInputCallType[keyof typeof StartCallInputCallType];
+
+
+export const StartCallInputCallType = {
+  inbound: 'inbound',
+  outbound: 'outbound',
+  web_call: 'web_call',
+  test: 'test',
+} as const;
+
 export interface StartCallInput {
-  lead_id: string;
+  lead_id?: string;
+  phone?: string;
+  customer_name?: string;
+  agent_id?: string;
+  call_type?: StartCallInputCallType;
 }
 
 export type AppointmentStatus = typeof AppointmentStatus[keyof typeof AppointmentStatus];
@@ -258,8 +300,17 @@ export const AppointmentStatus = {
 
 export interface Appointment {
   id: string;
-  lead_id: string;
+  /** @nullable */
+  lead_id?: string | null;
   lead_name: string;
+  /** @nullable */
+  call_id?: string | null;
+  /** @nullable */
+  customer_name?: string | null;
+  /** @nullable */
+  customer_phone?: string | null;
+  /** @nullable */
+  customer_email?: string | null;
   service_or_property: string;
   start_time: string;
   end_time: string;
@@ -385,6 +436,117 @@ export interface Usage {
   estimated_cost: number;
 }
 
+export type AgentSyncStatus = typeof AgentSyncStatus[keyof typeof AgentSyncStatus];
+
+
+export const AgentSyncStatus = {
+  synced: 'synced',
+  pending: 'pending',
+  failed: 'failed',
+  unconfigured: 'unconfigured',
+} as const;
+
+export interface Agent {
+  id: string;
+  name: string;
+  /** @nullable */
+  retell_agent_id?: string | null;
+  /** @nullable */
+  retell_llm_id?: string | null;
+  voice_id: string;
+  language: string;
+  /** @nullable */
+  greeting?: string | null;
+  /** @nullable */
+  prompt?: string | null;
+  is_active: boolean;
+  sync_status: AgentSyncStatus;
+  /** @nullable */
+  last_synced_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateAgentInput {
+  name: string;
+  voice_id: string;
+  language?: string;
+  greeting?: string;
+  prompt?: string;
+  is_active?: boolean;
+}
+
+export interface UpdateAgentInput {
+  name?: string;
+  voice_id?: string;
+  language?: string;
+  greeting?: string;
+  prompt?: string;
+  is_active?: boolean;
+}
+
+export interface TestAgentInput {
+  phone_number: string;
+  customer_name?: string;
+}
+
+export interface Message {
+  id: string;
+  /** @nullable */
+  call_id?: string | null;
+  /** @nullable */
+  contact_id?: string | null;
+  caller_name: string;
+  caller_phone: string;
+  /** @nullable */
+  caller_email?: string | null;
+  reason: string;
+  is_handled: boolean;
+  /** @nullable */
+  notes?: string | null;
+  /** @nullable */
+  assigned_to?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateMessageInput {
+  call_id?: string;
+  contact_id?: string;
+  caller_name: string;
+  caller_phone: string;
+  caller_email?: string;
+  reason: string;
+  notes?: string;
+  assigned_to?: string;
+}
+
+export interface UpdateMessageInput {
+  is_handled?: boolean;
+  notes?: string;
+  assigned_to?: string;
+}
+
+export type OverviewReportSentimentBreakdown = {
+  positive: number;
+  neutral: number;
+  negative: number;
+  mixed: number;
+  unknown: number;
+};
+
+export interface OverviewReport {
+  total_calls: number;
+  total_duration_seconds: number;
+  avg_duration_seconds: number;
+  sentiment_breakdown: OverviewReportSentimentBreakdown;
+  successful_calls: number;
+  total_messages: number;
+  unhandled_messages: number;
+  total_bookings: number;
+  active_agents: number;
+}
+
 /**
  * Resource not found
  */
@@ -426,7 +588,15 @@ export const GetLeadsScore = {
 } as const;
 
 export type GetCallsParams = {
+search?: string;
 status?: GetCallsStatus;
+call_type?: GetCallsCallType;
+agent_id?: string;
+sentiment?: GetCallsSentiment;
+from_date?: string;
+to_date?: string;
+limit?: number;
+offset?: number;
 };
 
 export type GetCallsStatus = typeof GetCallsStatus[keyof typeof GetCallsStatus];
@@ -443,4 +613,36 @@ export const GetCallsStatus = {
   failed: 'failed',
   uncertain: 'uncertain',
 } as const;
+
+export type GetCallsCallType = typeof GetCallsCallType[keyof typeof GetCallsCallType];
+
+
+export const GetCallsCallType = {
+  inbound: 'inbound',
+  outbound: 'outbound',
+  web_call: 'web_call',
+  test: 'test',
+} as const;
+
+export type GetCallsSentiment = typeof GetCallsSentiment[keyof typeof GetCallsSentiment];
+
+
+export const GetCallsSentiment = {
+  Positive: 'Positive',
+  Neutral: 'Neutral',
+  Negative: 'Negative',
+  Mixed: 'Mixed',
+  Unknown: 'Unknown',
+} as const;
+
+export type GetAgentsParams = {
+search?: string;
+};
+
+export type GetMessagesParams = {
+is_handled?: boolean;
+search?: string;
+limit?: number;
+offset?: number;
+};
 

@@ -10,6 +10,7 @@ export default defineConfig({
       // Needed so @workspace/db can be imported without throwing at module load.
       // The actual DB connection is never used in tests since db is vi.mock'd.
       DATABASE_URL: "postgresql://test:test@localhost:5432/test_db",
+      LEADSPRINT_KILL_SWITCH: "false",
     },
   },
 });

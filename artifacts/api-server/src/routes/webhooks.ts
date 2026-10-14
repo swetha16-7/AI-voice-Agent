@@ -10,6 +10,7 @@ import {
   contactsTable,
   db,
   leadsTable,
+  messagesTable,
   providerEventsTable,
   usageTable,
   workflowJobsTable,
@@ -680,6 +681,52 @@ router.post("/webhooks/retell", async (req, res): Promise<void> => {
           ? body.summary
           : undefined;
 
+      const recordingUrlCandidate =
+        (typeof callObj.recording_url === "string" && callObj.recording_url) ||
+        (typeof body.recording_url === "string" && body.recording_url) ||
+        undefined;
+
+      const transcriptCandidate =
+        (typeof callObj.transcript === "string" && callObj.transcript) ||
+        (typeof body.transcript === "string" && body.transcript) ||
+        undefined;
+
+      const transcriptObjectCandidate =
+        callObj.transcript_object ?? body.transcript_object ?? undefined;
+
+      const sentimentCandidate =
+        (typeof (callObj.call_analysis as any)?.user_sentiment === "string" && (callObj.call_analysis as any).user_sentiment) ||
+        (typeof (body.call_analysis as any)?.user_sentiment === "string" && (body.call_analysis as any).user_sentiment) ||
+        (typeof callObj.user_sentiment === "string" && callObj.user_sentiment) ||
+        (typeof body.user_sentiment === "string" && body.user_sentiment) ||
+        undefined;
+
+      const rawCallType =
+        (typeof callObj.call_type === "string" && callObj.call_type) ||
+        (typeof body.call_type === "string" && body.call_type) ||
+        (typeof callObj.direction === "string" && callObj.direction === "inbound" ? "inbound" : "outbound");
+
+      const callTypeCandidate =
+        rawCallType.includes("inbound") ? "inbound" :
+        rawCallType.includes("web") ? "web_call" :
+        rawCallType.includes("test") ? "test" : "outbound";
+
+      const agentIdCandidate =
+        (typeof callObj.agent_id === "string" && callObj.agent_id) ||
+        (typeof body.agent_id === "string" && body.agent_id) ||
+        undefined;
+
+      const agentNameCandidate =
+        (typeof callObj.agent_name === "string" && callObj.agent_name) ||
+        (typeof body.agent_name === "string" && body.agent_name) ||
+        undefined;
+
+      const messageLeftCandidate =
+        callObj.message_left === true ||
+        body.message_left === true ||
+        (callObj.call_analysis as any)?.message_left === true ||
+        transferFailed;
+
       // 1. Locate existing call record
       let [callRow] = await tx
         .select()
@@ -804,6 +851,15 @@ router.post("/webhooks/retell", async (req, res): Promise<void> => {
                 : disconnectionReason ?? (isTerminal ? "Completed" : "In progress"),
               transferred: transferAttempted ? transferSucceeded : false,
               errorState: rawStatus === "failed" ? "Retell reported a failed call" : transferFailed ? "transfer_failed" : undefined,
+              callType: callTypeCandidate,
+              agentId: agentIdCandidate,
+              agentName: agentNameCandidate,
+              sentiment: sentimentCandidate,
+              recordingUrl: recordingUrlCandidate,
+              transcript: transcriptCandidate,
+              transcriptObject: transcriptObjectCandidate,
+              disconnectionReason: disconnectionReason,
+              messageLeft: messageLeftCandidate,
             })
             .onConflictDoNothing()
             .returning();
@@ -860,6 +916,15 @@ router.post("/webhooks/retell", async (req, res): Promise<void> => {
             summary: finalSummary,
             outcome: finalOutcome,
             errorState: finalErrorState,
+            recordingUrl: recordingUrlCandidate ?? callRow.recordingUrl,
+            transcript: transcriptCandidate ?? callRow.transcript,
+            transcriptObject: transcriptObjectCandidate ?? callRow.transcriptObject,
+            sentiment: sentimentCandidate ?? callRow.sentiment,
+            disconnectionReason: disconnectionReason ?? callRow.disconnectionReason,
+            agentId: agentIdCandidate ?? callRow.agentId,
+            agentName: agentNameCandidate ?? callRow.agentName,
+            callType: (callTypeCandidate || callRow.callType) as "inbound" | "outbound" | "web_call" | "test",
+            messageLeft: messageLeftCandidate || callRow.messageLeft,
           })
           .where(and(eq(callsTable.businessId, businessId), eq(callsTable.id, callRow.id)));
 
@@ -894,6 +959,37 @@ router.post("/webhooks/retell", async (req, res): Promise<void> => {
                 estimatedCost: sql`${usageTable.estimatedCost} + ${(incrementalSeconds / 60) * 0.12}`,
               })
               .where(eq(usageTable.id, activeUsage.id));
+          }
+        }
+
+        if (messageLeftCandidate) {
+          const [existingMsg] = await tx
+            .select({ id: messagesTable.id })
+            .from(messagesTable)
+            .where(and(eq(messagesTable.businessId, businessId), eq(messagesTable.callId, callRow.id)))
+            .limit(1);
+
+          if (!existingMsg) {
+            const [contact] = callRow.contactId
+              ? await tx.select().from(contactsTable).where(eq(contactsTable.id, callRow.contactId)).limit(1)
+              : [];
+            const msgId = `msg_${crypto.randomUUID().slice(0, 12)}`;
+            await tx.insert(messagesTable).values({
+              id: msgId,
+              businessId,
+              callId: callRow.id,
+              contactId: callRow.contactId,
+              callerName: contact?.name || "Caller",
+              callerPhone: contact?.phone || "",
+              callerEmail: contact?.email || null,
+              reason: summaryCandidate || (transferFailed ? "Transfer to human failed — callback requested" : "Caller left a message"),
+              isHandled: false,
+              notes: `Call ended with status ${finalStatus} (${disconnectionReason ?? "none"}).`,
+            });
+            await tx
+              .update(callsTable)
+              .set({ messageLeft: true, messageId: msgId })
+              .where(and(eq(callsTable.businessId, businessId), eq(callsTable.id, callRow.id)));
           }
         }
 

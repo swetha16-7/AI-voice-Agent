@@ -5,8 +5,18 @@
  * LeadSprint operator console API
  * OpenAPI spec version: 0.1.0
  */
+import type { GetCallsCallType } from './getCallsCallType';
+import type { GetCallsSentiment } from './getCallsSentiment';
 import type { GetCallsStatus } from './getCallsStatus';
 
 export type GetCallsParams = {
+search?: string;
 status?: GetCallsStatus;
+call_type?: GetCallsCallType;
+agent_id?: string;
+sentiment?: GetCallsSentiment;
+from_date?: string;
+to_date?: string;
+limit?: number;
+offset?: number;
 };

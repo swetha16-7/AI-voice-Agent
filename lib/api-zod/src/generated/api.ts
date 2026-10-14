@@ -120,8 +120,12 @@ export const GetTodayResponse = zod.object({
   "setup_warnings": zod.array(zod.string()),
   "upcoming": zod.array(zod.object({
   "id": zod.string(),
-  "lead_id": zod.string(),
+  "lead_id": zod.string().nullish(),
   "lead_name": zod.string(),
+  "call_id": zod.string().nullish(),
+  "customer_name": zod.string().nullish(),
+  "customer_phone": zod.string().nullish(),
+  "customer_email": zod.string().nullish(),
   "service_or_property": zod.string(),
   "start_time": zod.string(),
   "end_time": zod.string(),
@@ -384,7 +388,15 @@ export const SuppressLeadResponse = zod.object({
  * @summary List recent calls
  */
 export const GetCallsQueryParams = zod.object({
-  "status": zod.enum(['created', 'policy_blocked', 'queued', 'provider_requesting', 'provider_accepted', 'in_progress', 'completed', 'failed', 'uncertain']).optional()
+  "search": zod.coerce.string().optional(),
+  "status": zod.enum(['created', 'policy_blocked', 'queued', 'provider_requesting', 'provider_accepted', 'in_progress', 'completed', 'failed', 'uncertain']).optional(),
+  "call_type": zod.enum(['inbound', 'outbound', 'web_call', 'test']).optional(),
+  "agent_id": zod.coerce.string().optional(),
+  "sentiment": zod.enum(['Positive', 'Neutral', 'Negative', 'Mixed', 'Unknown']).optional(),
+  "from_date": zod.coerce.string().optional(),
+  "to_date": zod.coerce.string().optional(),
+  "limit": zod.coerce.number().optional(),
+  "offset": zod.coerce.number().optional()
 })
 
 export const GetCallsResponseItem = zod.object({
@@ -401,7 +413,17 @@ export const GetCallsResponseItem = zod.object({
   "outcome": zod.string(),
   "transferred": zod.boolean(),
   "booked": zod.boolean(),
-  "error_state": zod.string().nullable()
+  "error_state": zod.string().nullable(),
+  "agent_id": zod.string().nullish(),
+  "agent_name": zod.string().nullish(),
+  "call_type": zod.enum(['inbound', 'outbound', 'web_call', 'test']),
+  "sentiment": zod.string().nullish(),
+  "recording_url": zod.string().nullish(),
+  "transcript": zod.string().nullish(),
+  "disconnection_reason": zod.string().nullish(),
+  "message_left": zod.boolean(),
+  "message_id": zod.string().nullish(),
+  "appointment_id": zod.string().nullish()
 })
 export const GetCallsResponse = zod.array(GetCallsResponseItem)
 
@@ -410,7 +432,11 @@ export const GetCallsResponse = zod.array(GetCallsResponseItem)
  * @summary Safely queue a call for a lead
  */
 export const StartCallBody = zod.object({
-  "lead_id": zod.string()
+  "lead_id": zod.string().optional(),
+  "phone": zod.string().optional(),
+  "customer_name": zod.string().optional(),
+  "agent_id": zod.string().optional(),
+  "call_type": zod.enum(['inbound', 'outbound', 'web_call', 'test']).optional()
 })
 
 export const StartCallResponse = zod.object({
@@ -427,7 +453,17 @@ export const StartCallResponse = zod.object({
   "outcome": zod.string(),
   "transferred": zod.boolean(),
   "booked": zod.boolean(),
-  "error_state": zod.string().nullable()
+  "error_state": zod.string().nullable(),
+  "agent_id": zod.string().nullish(),
+  "agent_name": zod.string().nullish(),
+  "call_type": zod.enum(['inbound', 'outbound', 'web_call', 'test']),
+  "sentiment": zod.string().nullish(),
+  "recording_url": zod.string().nullish(),
+  "transcript": zod.string().nullish(),
+  "disconnection_reason": zod.string().nullish(),
+  "message_left": zod.boolean(),
+  "message_id": zod.string().nullish(),
+  "appointment_id": zod.string().nullish()
 })
 
 
@@ -452,7 +488,17 @@ export const GetCallResponse = zod.object({
   "outcome": zod.string(),
   "transferred": zod.boolean(),
   "booked": zod.boolean(),
-  "error_state": zod.string().nullable()
+  "error_state": zod.string().nullable(),
+  "agent_id": zod.string().nullish(),
+  "agent_name": zod.string().nullish(),
+  "call_type": zod.enum(['inbound', 'outbound', 'web_call', 'test']),
+  "sentiment": zod.string().nullish(),
+  "recording_url": zod.string().nullish(),
+  "transcript": zod.string().nullish(),
+  "disconnection_reason": zod.string().nullish(),
+  "message_left": zod.boolean(),
+  "message_id": zod.string().nullish(),
+  "appointment_id": zod.string().nullish()
 })
 
 
@@ -483,8 +529,12 @@ export const BookAppointmentBody = zod.object({
 
 export const BookAppointmentResponse = zod.object({
   "id": zod.string(),
-  "lead_id": zod.string(),
+  "lead_id": zod.string().nullish(),
   "lead_name": zod.string(),
+  "call_id": zod.string().nullish(),
+  "customer_name": zod.string().nullish(),
+  "customer_phone": zod.string().nullish(),
+  "customer_email": zod.string().nullish(),
   "service_or_property": zod.string(),
   "start_time": zod.string(),
   "end_time": zod.string(),
@@ -500,8 +550,12 @@ export const BookAppointmentResponse = zod.object({
  */
 export const GetAppointmentsResponseItem = zod.object({
   "id": zod.string(),
-  "lead_id": zod.string(),
+  "lead_id": zod.string().nullish(),
   "lead_name": zod.string(),
+  "call_id": zod.string().nullish(),
+  "customer_name": zod.string().nullish(),
+  "customer_phone": zod.string().nullish(),
+  "customer_email": zod.string().nullish(),
   "service_or_property": zod.string(),
   "start_time": zod.string(),
   "end_time": zod.string(),
@@ -612,6 +666,288 @@ export const GetUsageResponse = zod.object({
   "sms_count": zod.number(),
   "booking_count": zod.number(),
   "estimated_cost": zod.number()
+})
+
+
+/**
+ * @summary Comprehensive AI Receptionist overview analytics
+ */
+export const GetOverviewReportResponse = zod.object({
+  "total_calls": zod.number(),
+  "total_duration_seconds": zod.number(),
+  "avg_duration_seconds": zod.number(),
+  "sentiment_breakdown": zod.object({
+  "positive": zod.number(),
+  "neutral": zod.number(),
+  "negative": zod.number(),
+  "mixed": zod.number(),
+  "unknown": zod.number()
+}),
+  "successful_calls": zod.number(),
+  "total_messages": zod.number(),
+  "unhandled_messages": zod.number(),
+  "total_bookings": zod.number(),
+  "active_agents": zod.number()
+})
+
+
+/**
+ * @summary List AI Receptionist agents
+ */
+export const GetAgentsQueryParams = zod.object({
+  "search": zod.coerce.string().optional()
+})
+
+export const GetAgentsResponseItem = zod.object({
+  "id": zod.string(),
+  "name": zod.string(),
+  "retell_agent_id": zod.string().nullish(),
+  "retell_llm_id": zod.string().nullish(),
+  "voice_id": zod.string(),
+  "language": zod.string(),
+  "greeting": zod.string().nullish(),
+  "prompt": zod.string().nullish(),
+  "is_active": zod.boolean(),
+  "sync_status": zod.enum(['synced', 'pending', 'failed', 'unconfigured']),
+  "last_synced_at": zod.string().nullish(),
+  "created_at": zod.string(),
+  "updated_at": zod.string()
+})
+export const GetAgentsResponse = zod.array(GetAgentsResponseItem)
+
+
+/**
+ * @summary Create and synchronize a new AI receptionist agent
+ */
+export const CreateAgentBody = zod.object({
+  "name": zod.string(),
+  "voice_id": zod.string(),
+  "language": zod.string().optional(),
+  "greeting": zod.string().optional(),
+  "prompt": zod.string().optional(),
+  "is_active": zod.boolean().optional()
+})
+
+export const CreateAgentResponse = zod.object({
+  "id": zod.string(),
+  "name": zod.string(),
+  "retell_agent_id": zod.string().nullish(),
+  "retell_llm_id": zod.string().nullish(),
+  "voice_id": zod.string(),
+  "language": zod.string(),
+  "greeting": zod.string().nullish(),
+  "prompt": zod.string().nullish(),
+  "is_active": zod.boolean(),
+  "sync_status": zod.enum(['synced', 'pending', 'failed', 'unconfigured']),
+  "last_synced_at": zod.string().nullish(),
+  "created_at": zod.string(),
+  "updated_at": zod.string()
+})
+
+
+/**
+ * @summary Get agent details
+ */
+export const GetAgentParams = zod.object({
+  "id": zod.coerce.string()
+})
+
+export const GetAgentResponse = zod.object({
+  "id": zod.string(),
+  "name": zod.string(),
+  "retell_agent_id": zod.string().nullish(),
+  "retell_llm_id": zod.string().nullish(),
+  "voice_id": zod.string(),
+  "language": zod.string(),
+  "greeting": zod.string().nullish(),
+  "prompt": zod.string().nullish(),
+  "is_active": zod.boolean(),
+  "sync_status": zod.enum(['synced', 'pending', 'failed', 'unconfigured']),
+  "last_synced_at": zod.string().nullish(),
+  "created_at": zod.string(),
+  "updated_at": zod.string()
+})
+
+
+/**
+ * @summary Update and synchronize an existing agent
+ */
+export const UpdateAgentParams = zod.object({
+  "id": zod.coerce.string()
+})
+
+export const UpdateAgentBody = zod.object({
+  "name": zod.string().optional(),
+  "voice_id": zod.string().optional(),
+  "language": zod.string().optional(),
+  "greeting": zod.string().optional(),
+  "prompt": zod.string().optional(),
+  "is_active": zod.boolean().optional()
+})
+
+export const UpdateAgentResponse = zod.object({
+  "id": zod.string(),
+  "name": zod.string(),
+  "retell_agent_id": zod.string().nullish(),
+  "retell_llm_id": zod.string().nullish(),
+  "voice_id": zod.string(),
+  "language": zod.string(),
+  "greeting": zod.string().nullish(),
+  "prompt": zod.string().nullish(),
+  "is_active": zod.boolean(),
+  "sync_status": zod.enum(['synced', 'pending', 'failed', 'unconfigured']),
+  "last_synced_at": zod.string().nullish(),
+  "created_at": zod.string(),
+  "updated_at": zod.string()
+})
+
+
+/**
+ * @summary Test an agent with a test call
+ */
+export const TestAgentParams = zod.object({
+  "id": zod.coerce.string()
+})
+
+export const TestAgentBody = zod.object({
+  "phone_number": zod.string(),
+  "customer_name": zod.string().optional()
+})
+
+export const TestAgentResponse = zod.object({
+  "id": zod.string(),
+  "lead_id": zod.string(),
+  "lead_name": zod.string(),
+  "phone": zod.string(),
+  "provider": zod.string(),
+  "status": zod.enum(['created', 'policy_blocked', 'queued', 'provider_requesting', 'provider_accepted', 'in_progress', 'completed', 'failed', 'uncertain']),
+  "started_at": zod.string().nullable(),
+  "ended_at": zod.string().nullable(),
+  "duration_seconds": zod.number().nullable(),
+  "summary": zod.string(),
+  "outcome": zod.string(),
+  "transferred": zod.boolean(),
+  "booked": zod.boolean(),
+  "error_state": zod.string().nullable(),
+  "agent_id": zod.string().nullish(),
+  "agent_name": zod.string().nullish(),
+  "call_type": zod.enum(['inbound', 'outbound', 'web_call', 'test']),
+  "sentiment": zod.string().nullish(),
+  "recording_url": zod.string().nullish(),
+  "transcript": zod.string().nullish(),
+  "disconnection_reason": zod.string().nullish(),
+  "message_left": zod.boolean(),
+  "message_id": zod.string().nullish(),
+  "appointment_id": zod.string().nullish()
+})
+
+
+/**
+ * @summary List receptionist messages and callback requests
+ */
+export const GetMessagesQueryParams = zod.object({
+  "is_handled": zod.coerce.boolean().optional(),
+  "search": zod.coerce.string().optional(),
+  "limit": zod.coerce.number().optional(),
+  "offset": zod.coerce.number().optional()
+})
+
+export const GetMessagesResponseItem = zod.object({
+  "id": zod.string(),
+  "call_id": zod.string().nullish(),
+  "contact_id": zod.string().nullish(),
+  "caller_name": zod.string(),
+  "caller_phone": zod.string(),
+  "caller_email": zod.string().nullish(),
+  "reason": zod.string(),
+  "is_handled": zod.boolean(),
+  "notes": zod.string().nullish(),
+  "assigned_to": zod.string().nullish(),
+  "created_at": zod.string(),
+  "updated_at": zod.string()
+})
+export const GetMessagesResponse = zod.array(GetMessagesResponseItem)
+
+
+/**
+ * @summary Create a caller message or callback request
+ */
+export const CreateMessageBody = zod.object({
+  "call_id": zod.string().optional(),
+  "contact_id": zod.string().optional(),
+  "caller_name": zod.string(),
+  "caller_phone": zod.string(),
+  "caller_email": zod.string().optional(),
+  "reason": zod.string(),
+  "notes": zod.string().optional(),
+  "assigned_to": zod.string().optional()
+})
+
+export const CreateMessageResponse = zod.object({
+  "id": zod.string(),
+  "call_id": zod.string().nullish(),
+  "contact_id": zod.string().nullish(),
+  "caller_name": zod.string(),
+  "caller_phone": zod.string(),
+  "caller_email": zod.string().nullish(),
+  "reason": zod.string(),
+  "is_handled": zod.boolean(),
+  "notes": zod.string().nullish(),
+  "assigned_to": zod.string().nullish(),
+  "created_at": zod.string(),
+  "updated_at": zod.string()
+})
+
+
+/**
+ * @summary Get message details
+ */
+export const GetMessageParams = zod.object({
+  "id": zod.coerce.string()
+})
+
+export const GetMessageResponse = zod.object({
+  "id": zod.string(),
+  "call_id": zod.string().nullish(),
+  "contact_id": zod.string().nullish(),
+  "caller_name": zod.string(),
+  "caller_phone": zod.string(),
+  "caller_email": zod.string().nullish(),
+  "reason": zod.string(),
+  "is_handled": zod.boolean(),
+  "notes": zod.string().nullish(),
+  "assigned_to": zod.string().nullish(),
+  "created_at": zod.string(),
+  "updated_at": zod.string()
+})
+
+
+/**
+ * @summary Update message status or notes
+ */
+export const UpdateMessageParams = zod.object({
+  "id": zod.coerce.string()
+})
+
+export const UpdateMessageBody = zod.object({
+  "is_handled": zod.boolean().optional(),
+  "notes": zod.string().optional(),
+  "assigned_to": zod.string().optional()
+})
+
+export const UpdateMessageResponse = zod.object({
+  "id": zod.string(),
+  "call_id": zod.string().nullish(),
+  "contact_id": zod.string().nullish(),
+  "caller_name": zod.string(),
+  "caller_phone": zod.string(),
+  "caller_email": zod.string().nullish(),
+  "reason": zod.string(),
+  "is_handled": zod.boolean(),
+  "notes": zod.string().nullish(),
+  "assigned_to": zod.string().nullish(),
+  "created_at": zod.string(),
+  "updated_at": zod.string()
 })
 
 

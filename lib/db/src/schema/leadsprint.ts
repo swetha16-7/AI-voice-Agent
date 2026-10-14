@@ -85,27 +85,85 @@ export const leadsTable = pgTable("leads", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });
 
+export const agentsTable = pgTable("agents", {
+  id: text("id").primaryKey(),
+  businessId: text("business_id").notNull().references(() => businessesTable.id),
+  retellAgentId: text("retell_agent_id"),
+  retellLlmId: text("retell_llm_id"),
+  name: text("name").notNull(),
+  language: text("language").notNull().default("en-US"),
+  voiceId: text("voice_id").notNull().default("retell-Cimo"),
+  greeting: text("greeting").notNull().default(""),
+  prompt: text("prompt").notNull().default(""),
+  interruptionSensitivity: numeric("interruption_sensitivity").default("0.9"),
+  maxCallDurationMs: integer("max_call_duration_ms").default(3600000),
+  isActive: boolean("is_active").notNull().default(true),
+  syncStatus: text("sync_status").notNull().default("synced"),
+  syncError: text("sync_error"),
+  lastSyncedAt: timestamp("last_synced_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
+}, (table) => ({
+  businessRetellUnique: uniqueIndex("agents_business_retell_unique").on(table.businessId, table.retellAgentId),
+  businessIdx: index("agents_business_idx").on(table.businessId),
+}));
+
 export const callsTable = pgTable("calls", {
   id: text("id").primaryKey(),
   businessId: text("business_id").notNull().references(() => businessesTable.id),
   contactId: text("contact_id").notNull().references(() => contactsTable.id),
   leadId: text("lead_id").notNull().references(() => leadsTable.id),
+  agentId: text("agent_id").references(() => agentsTable.id),
+  agentName: text("agent_name"),
   provider: text("provider").notNull().default("Retell"),
   providerCallId: text("provider_call_id"),
   idempotencyKey: text("idempotency_key").notNull(),
+  callType: text("call_type").notNull().default("outbound"),
   status: text("status").notNull().default("queued"),
   startedAt: timestamp("started_at", { withTimezone: true }),
   endedAt: timestamp("ended_at", { withTimezone: true }),
   durationSeconds: integer("duration_seconds"),
   summary: text("summary").notNull().default("Call queued for the approved qualification script."),
   outcome: text("outcome").notNull().default("Queued"),
+  sentiment: text("sentiment"),
+  recordingUrl: text("recording_url"),
+  transcript: text("transcript"),
+  transcriptObject: jsonb("transcript_object"),
+  disconnectionReason: text("disconnection_reason"),
   transferred: boolean("transferred").notNull().default(false),
   booked: boolean("booked").notNull().default(false),
+  messageLeft: boolean("message_left").notNull().default(false),
+  messageId: text("message_id"),
+  appointmentId: text("appointment_id"),
   errorState: text("error_state"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => ({
   providerCallUnique: uniqueIndex("calls_provider_call_unique").on(table.businessId, table.provider, table.providerCallId),
   idempotencyUnique: uniqueIndex("calls_business_idempotency_unique").on(table.businessId, table.idempotencyKey),
+  businessIdx: index("calls_business_idx").on(table.businessId),
+  agentIdx: index("calls_agent_idx").on(table.agentId),
+}));
+
+export const messagesTable = pgTable("messages", {
+  id: text("id").primaryKey(),
+  businessId: text("business_id").notNull().references(() => businessesTable.id),
+  callId: text("call_id").references(() => callsTable.id),
+  contactId: text("contact_id").references(() => contactsTable.id),
+  callerName: text("caller_name").notNull(),
+  callerPhone: text("caller_phone").notNull(),
+  callerEmail: text("caller_email"),
+  reason: text("reason").notNull(),
+  isHandled: boolean("is_handled").notNull().default(false),
+  handledAt: timestamp("handled_at", { withTimezone: true }),
+  handledBy: text("handled_by"),
+  assignedTo: text("assigned_to"),
+  notes: text("notes"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
+}, (table) => ({
+  businessIdx: index("messages_business_idx").on(table.businessId),
+  businessHandledIdx: index("messages_business_handled_idx").on(table.businessId, table.isHandled),
+  callIdx: index("messages_call_idx").on(table.callId),
 }));
 
 export const appointmentsTable = pgTable("appointments", {
@@ -113,6 +171,10 @@ export const appointmentsTable = pgTable("appointments", {
   businessId: text("business_id").notNull().references(() => businessesTable.id),
   contactId: text("contact_id").notNull().references(() => contactsTable.id),
   leadId: text("lead_id").notNull().references(() => leadsTable.id),
+  callId: text("call_id").references(() => callsTable.id),
+  customerName: text("customer_name"),
+  customerPhone: text("customer_phone"),
+  customerEmail: text("customer_email"),
   serviceOrProperty: text("service_or_property").notNull(),
   startTime: timestamp("start_time", { withTimezone: true }).notNull(),
   endTime: timestamp("end_time", { withTimezone: true }).notNull(),
@@ -123,6 +185,8 @@ export const appointmentsTable = pgTable("appointments", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => ({
   calendarExternalUnique: uniqueIndex("appointments_calendar_external_unique").on(table.calendarProvider, table.externalId),
+  callIdx: index("appointments_call_idx").on(table.callId),
+  businessIdx: index("appointments_business_idx").on(table.businessId),
 }));
 
 export const activitiesTable = pgTable("activities", {
@@ -216,6 +280,8 @@ export const insertSuppressionSchema = createInsertSchema(suppressionsTable);
 export const insertWorkflowJobSchema = createInsertSchema(workflowJobsTable);
 export const insertProviderEventSchema = createInsertSchema(providerEventsTable);
 export const insertConsentEventSchema = createInsertSchema(consentEventsTable);
+export const insertAgentSchema = createInsertSchema(agentsTable);
+export const insertMessageSchema = createInsertSchema(messagesTable);
 
 export type Business = z.infer<typeof insertBusinessSchema>;
 export type User = z.infer<typeof insertUserSchema>;
@@ -224,3 +290,5 @@ export type Lead = z.infer<typeof insertLeadSchema>;
 export type Call = z.infer<typeof insertCallSchema>;
 export type Appointment = z.infer<typeof insertAppointmentSchema>;
 export type ConsentEvent = z.infer<typeof insertConsentEventSchema>;
+export type Agent = z.infer<typeof insertAgentSchema>;
+export type Message = z.infer<typeof insertMessageSchema>;

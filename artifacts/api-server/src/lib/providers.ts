@@ -364,3 +364,141 @@ export function computeRetellSignature(
   const digest = crypto.createHmac("sha256", secret).update(bodyStr + timestamp).digest("hex");
   return `v=${timestamp},d=${digest}`;
 }
+
+export interface RetellAgentSyncInput {
+  name: string;
+  voiceId: string;
+  language?: string;
+  greeting?: string | null;
+  prompt?: string | null;
+}
+
+export async function createRetellAgent(input: RetellAgentSyncInput): Promise<{
+  agentId: string;
+  llmId?: string;
+}> {
+  const config = providerConfig().retell;
+  if (!config.apiKey) {
+    throw new ProviderNotConfiguredError("Retell", ["apiKey"]);
+  }
+
+  let llmId: string | undefined;
+  if (input.prompt || input.greeting) {
+    try {
+      const llmRes = await fetch("https://api.retellai.com/create-retell-llm", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${config.apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          general_prompt: input.prompt || undefined,
+          begin_message: input.greeting || undefined,
+        }),
+      });
+      const llmBody = await parseProviderResponse<{ llm_id?: string }>(llmRes, "Retell");
+      llmId = llmBody?.llm_id;
+    } catch (err) {
+      if (err instanceof ProviderRequestError) throw err;
+      throw new ProviderRequestError(`Failed to create Retell LLM: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  const agentPayload: Record<string, unknown> = {
+    agent_name: input.name,
+    voice_id: input.voiceId,
+    language: input.language || "en-US",
+  };
+  if (llmId) {
+    agentPayload.response_engine = {
+      type: "retell-llm",
+      llm_id: llmId,
+    };
+  }
+
+  const agentRes = await fetch("https://api.retellai.com/create-agent", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${config.apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(agentPayload),
+  });
+  const agentBody = await parseProviderResponse<{ agent_id?: string }>(agentRes, "Retell");
+  if (!agentBody?.agent_id) {
+    throw new ProviderRequestError("Retell did not return agent_id");
+  }
+
+  return { agentId: agentBody.agent_id, llmId };
+}
+
+export async function updateRetellAgent(input: {
+  agentId: string;
+  llmId?: string | null;
+  name?: string;
+  voiceId?: string;
+  language?: string;
+  greeting?: string | null;
+  prompt?: string | null;
+}): Promise<{ agentId: string; llmId?: string | null }> {
+  const config = providerConfig().retell;
+  if (!config.apiKey) {
+    throw new ProviderNotConfiguredError("Retell", ["apiKey"]);
+  }
+
+  if (input.llmId && (input.prompt !== undefined || input.greeting !== undefined)) {
+    const llmRes = await fetch(`https://api.retellai.com/update-retell-llm/${input.llmId}`, {
+      method: "PATCH",
+      headers: {
+        Authorization: `Bearer ${config.apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        general_prompt: input.prompt ?? undefined,
+        begin_message: input.greeting ?? undefined,
+      }),
+    });
+    await parseProviderResponse(llmRes, "Retell");
+  }
+
+  const updatePayload: Record<string, unknown> = {};
+  if (input.name) updatePayload.agent_name = input.name;
+  if (input.voiceId) updatePayload.voice_id = input.voiceId;
+  if (input.language) updatePayload.language = input.language;
+
+  if (Object.keys(updatePayload).length > 0) {
+    const agentRes = await fetch(`https://api.retellai.com/update-agent/${input.agentId}`, {
+      method: "PATCH",
+      headers: {
+        Authorization: `Bearer ${config.apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(updatePayload),
+    });
+    await parseProviderResponse(agentRes, "Retell");
+  }
+
+  return { agentId: input.agentId, llmId: input.llmId };
+}
+
+export async function getRetellAgent(agentId: string): Promise<unknown> {
+  const config = providerConfig().retell;
+  if (!config.apiKey) {
+    throw new ProviderNotConfiguredError("Retell", ["apiKey"]);
+  }
+  const res = await fetch(`https://api.retellai.com/get-agent/${agentId}`, {
+    headers: { Authorization: `Bearer ${config.apiKey}` },
+  });
+  return parseProviderResponse(res, "Retell");
+}
+
+export async function listRetellAgents(): Promise<unknown[]> {
+  const config = providerConfig().retell;
+  if (!config.apiKey) {
+    throw new ProviderNotConfiguredError("Retell", ["apiKey"]);
+  }
+  const res = await fetch("https://api.retellai.com/list-agents", {
+    headers: { Authorization: `Bearer ${config.apiKey}` },
+  });
+  return parseProviderResponse<unknown[]>(res, "Retell");
+}

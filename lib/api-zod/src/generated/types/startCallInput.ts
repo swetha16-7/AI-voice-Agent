@@ -5,7 +5,12 @@
  * LeadSprint operator console API
  * OpenAPI spec version: 0.1.0
  */
+import type { StartCallInputCallType } from './startCallInputCallType';
 
 export interface StartCallInput {
-  lead_id: string;
+  lead_id?: string;
+  phone?: string;
+  customer_name?: string;
+  agent_id?: string;
+  call_type?: StartCallInputCallType;
 }

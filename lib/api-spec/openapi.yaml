@@ -24,6 +24,10 @@ tags:
     description: Business configuration
   - name: reports
     description: Weekly reports and usage
+  - name: agents
+    description: AI Receptionist Agent management
+  - name: messages
+    description: Messages and callback requests
 paths:
   /healthz:
     get:
@@ -237,11 +241,45 @@ paths:
       tags: [calls]
       summary: List recent calls
       parameters:
+        - name: search
+          in: query
+          schema:
+            type: string
         - name: status
           in: query
           schema:
             type: string
             enum: [created, policy_blocked, queued, provider_requesting, provider_accepted, in_progress, completed, failed, uncertain]
+        - name: call_type
+          in: query
+          schema:
+            type: string
+            enum: [inbound, outbound, web_call, test]
+        - name: agent_id
+          in: query
+          schema:
+            type: string
+        - name: sentiment
+          in: query
+          schema:
+            type: string
+            enum: [Positive, Neutral, Negative, Mixed, Unknown]
+        - name: from_date
+          in: query
+          schema:
+            type: string
+        - name: to_date
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: number
+        - name: offset
+          in: query
+          schema:
+            type: number
       responses:
         "200":
           description: Call list
@@ -388,6 +426,198 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Usage"
+  /reports/overview:
+    get:
+      operationId: getOverviewReport
+      tags: [reports]
+      summary: Comprehensive AI Receptionist overview analytics
+      responses:
+        "200":
+          description: Overview analytics matching receptionist log
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OverviewReport"
+  /agents:
+    get:
+      operationId: getAgents
+      tags: [agents]
+      summary: List AI Receptionist agents
+      parameters:
+        - name: search
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Agent list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Agent"
+    post:
+      operationId: createAgent
+      tags: [agents]
+      summary: Create and synchronize a new AI receptionist agent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAgentInput"
+      responses:
+        "201":
+          description: Created agent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Agent"
+  /agents/{id}:
+    get:
+      operationId: getAgent
+      tags: [agents]
+      summary: Get agent details
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Agent detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Agent"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      operationId: updateAgent
+      tags: [agents]
+      summary: Update and synchronize an existing agent
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateAgentInput"
+      responses:
+        "200":
+          description: Updated agent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Agent"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /agents/{id}/test:
+    post:
+      operationId: testAgent
+      tags: [agents]
+      summary: Test an agent with a test call
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TestAgentInput"
+      responses:
+        "200":
+          description: Test call initiation result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Call"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /messages:
+    get:
+      operationId: getMessages
+      tags: [messages]
+      summary: List receptionist messages and callback requests
+      parameters:
+        - name: is_handled
+          in: query
+          schema:
+            type: boolean
+        - name: search
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: number
+        - name: offset
+          in: query
+          schema:
+            type: number
+      responses:
+        "200":
+          description: Message list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Message"
+    post:
+      operationId: createMessage
+      tags: [messages]
+      summary: Create a caller message or callback request
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateMessageInput"
+      responses:
+        "201":
+          description: Created message
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+  /messages/{id}:
+    get:
+      operationId: getMessage
+      tags: [messages]
+      summary: Get message details
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Message detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      operationId: updateMessage
+      tags: [messages]
+      summary: Update message status or notes
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateMessageInput"
+      responses:
+        "200":
+          description: Updated message
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /webhooks/intake:
     post:
       operationId: receiveLeadIntake
@@ -590,18 +820,35 @@ components:
         transferred: { type: boolean }
         booked: { type: boolean }
         error_state: { type: ["string", "null"] }
-      required: [id, lead_id, lead_name, phone, provider, status, started_at, ended_at, duration_seconds, summary, outcome, transferred, booked, error_state]
+        agent_id: { type: ["string", "null"] }
+        agent_name: { type: ["string", "null"] }
+        call_type: { type: string, enum: [inbound, outbound, web_call, test] }
+        sentiment: { type: ["string", "null"] }
+        recording_url: { type: ["string", "null"] }
+        transcript: { type: ["string", "null"] }
+        disconnection_reason: { type: ["string", "null"] }
+        message_left: { type: boolean }
+        message_id: { type: ["string", "null"] }
+        appointment_id: { type: ["string", "null"] }
+      required: [id, lead_id, lead_name, phone, provider, status, started_at, ended_at, duration_seconds, summary, outcome, transferred, booked, error_state, call_type, message_left]
     StartCallInput:
       type: object
       properties:
         lead_id: { type: string }
-      required: [lead_id]
+        phone: { type: string }
+        customer_name: { type: string }
+        agent_id: { type: string }
+        call_type: { type: string, enum: [inbound, outbound, web_call, test] }
     Appointment:
       type: object
       properties:
         id: { type: string }
-        lead_id: { type: string }
+        lead_id: { type: ["string", "null"] }
         lead_name: { type: string }
+        call_id: { type: ["string", "null"] }
+        customer_name: { type: ["string", "null"] }
+        customer_phone: { type: ["string", "null"] }
+        customer_email: { type: ["string", "null"] }
         service_or_property: { type: string }
         start_time: { type: string }
         end_time: { type: string }
@@ -609,7 +856,7 @@ components:
         calendar_provider: { type: string }
         external_id: { type: string }
         status: { type: string, enum: [confirmed, cancelled] }
-      required: [id, lead_id, lead_name, service_or_property, start_time, end_time, timezone, calendar_provider, external_id, status]
+      required: [id, lead_name, service_or_property, start_time, end_time, timezone, calendar_provider, external_id, status]
     AvailabilityInput:
       type: object
       properties:
@@ -720,4 +967,102 @@ components:
         booking_count: { type: number }
         estimated_cost: { type: number }
       required: [period_label, voice_minutes, included_minutes, sms_count, booking_count, estimated_cost]
+    Agent:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        retell_agent_id: { type: ["string", "null"] }
+        retell_llm_id: { type: ["string", "null"] }
+        voice_id: { type: string }
+        language: { type: string }
+        greeting: { type: ["string", "null"] }
+        prompt: { type: ["string", "null"] }
+        is_active: { type: boolean }
+        sync_status: { type: string, enum: [synced, pending, failed, unconfigured] }
+        last_synced_at: { type: ["string", "null"] }
+        created_at: { type: string }
+        updated_at: { type: string }
+      required: [id, name, voice_id, language, is_active, sync_status, created_at, updated_at]
+    CreateAgentInput:
+      type: object
+      properties:
+        name: { type: string }
+        voice_id: { type: string }
+        language: { type: string }
+        greeting: { type: string }
+        prompt: { type: string }
+        is_active: { type: boolean }
+      required: [name, voice_id]
+    UpdateAgentInput:
+      type: object
+      properties:
+        name: { type: string }
+        voice_id: { type: string }
+        language: { type: string }
+        greeting: { type: string }
+        prompt: { type: string }
+        is_active: { type: boolean }
+    TestAgentInput:
+      type: object
+      properties:
+        phone_number: { type: string }
+        customer_name: { type: string }
+      required: [phone_number]
+    Message:
+      type: object
+      properties:
+        id: { type: string }
+        call_id: { type: ["string", "null"] }
+        contact_id: { type: ["string", "null"] }
+        caller_name: { type: string }
+        caller_phone: { type: string }
+        caller_email: { type: ["string", "null"] }
+        reason: { type: string }
+        is_handled: { type: boolean }
+        notes: { type: ["string", "null"] }
+        assigned_to: { type: ["string", "null"] }
+        created_at: { type: string }
+        updated_at: { type: string }
+      required: [id, caller_name, caller_phone, reason, is_handled, created_at, updated_at]
+    CreateMessageInput:
+      type: object
+      properties:
+        call_id: { type: string }
+        contact_id: { type: string }
+        caller_name: { type: string }
+        caller_phone: { type: string }
+        caller_email: { type: string }
+        reason: { type: string }
+        notes: { type: string }
+        assigned_to: { type: string }
+      required: [caller_name, caller_phone, reason]
+    UpdateMessageInput:
+      type: object
+      properties:
+        is_handled: { type: boolean }
+        notes: { type: string }
+        assigned_to: { type: string }
+    OverviewReport:
+      type: object
+      properties:
+        total_calls: { type: number }
+        total_duration_seconds: { type: number }
+        avg_duration_seconds: { type: number }
+        sentiment_breakdown:
+          type: object
+          properties:
+            positive: { type: number }
+            neutral: { type: number }
+            negative: { type: number }
+            mixed: { type: number }
+            unknown: { type: number }
+          required: [positive, neutral, negative, mixed, unknown]
+        successful_calls: { type: number }
+        total_messages: { type: number }
+        unhandled_messages: { type: number }
+        total_bookings: { type: number }
+        active_agents: { type: number }
+      required: [total_calls, total_duration_seconds, avg_duration_seconds, sentiment_breakdown, successful_calls, total_messages, unhandled_messages, total_bookings, active_agents]
+
 
